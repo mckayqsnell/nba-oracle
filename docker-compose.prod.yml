@@ -1,0 +1,74 @@
+# NBA Oracle - Production Docker Compose
+# NOTE: Frontend deploys to Vercel, not Docker
+# This only runs backend + nginx on EC2
+
+services:
+  nginx:
+    image: public.ecr.aws/docker/library/nginx:1.28-alpine
+    container_name: nba-oracle-nginx-prod
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - nba-oracle-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - NET_BIND_SERVICE
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-your-username}/nba-oracle-backend:${IMAGE_TAG:-latest}
+    container_name: nba-oracle-backend-prod
+    env_file:
+      - .env.prod
+    environment:
+      - API_ENV=production
+      - DEBUG=false
+    networks:
+      - nba-oracle-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  nba-oracle-network:
+    driver: bridge

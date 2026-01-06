@@ -1,0 +1,51 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment files
+.env*
+!.env.example
+
+# Taskfile
+Taskfile.yml
+tasks/
+.task/
+
+# Scripts
+scripts/
+
+# 1Password config
+.1password.yml*
+
+# Notebooks (not needed in Docker)
+notebooks/
+
+# Infrastructure configs
+infrastructure/
+
+# Local dev files
+.dev-mode
+*.local
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Node
+node_modules/
+
+# Build artifacts
+dist/
+build/

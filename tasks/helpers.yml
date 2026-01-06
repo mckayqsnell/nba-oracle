@@ -1,0 +1,219 @@
+version: '3'
+
+# Helper Tasks for Setup, Dev, and Cleanup
+
+tasks:
+  # === Docker Helper ===
+
+  check_docker:
+    silent: true
+    cmds:
+      - |
+        if ! docker info >/dev/null 2>&1; then
+          echo "Docker daemon is not running"
+          echo ""
+          echo "Please start Docker:"
+          echo "  Open Docker Desktop application"
+          echo "  Wait for Docker to start (you'll see the whale icon in the menu bar)"
+          echo ""
+          printf "Press Enter once Docker is running, or Ctrl+C to cancel: "
+          read -r
+          echo ""
+
+          if ! docker info >/dev/null 2>&1; then
+            echo "Docker is still not running. Please start Docker and try again."
+            exit 1
+          fi
+
+          echo "Docker is now running"
+          echo ""
+        fi
+
+  # === Setup Interactive Wizard ===
+
+  setup_interactive:
+    interactive: true
+    silent: true
+    cmds:
+      - |
+        clear
+        echo "========================================"
+        echo "   NBA Oracle Development Setup"
+        echo "========================================"
+        echo ""
+
+        # Check if Docker daemon is running
+        task helpers:check_docker
+
+        # Check if 1Password is already configured
+        if [ -f .1password.yml ]; then
+          if [ -f .env.local ]; then
+            echo "Step 1/3: 1Password already configured"
+            echo "Step 2/3: Syncing latest .env files from 1Password..."
+            task env:generate > /dev/null 2>&1 || echo "   Could not sync (continuing with existing)"
+          else
+            echo "Step 1/3: 1Password configured, generating .env files..."
+            task env:generate
+          fi
+          echo ""
+        else
+          echo "Step 1/3: Setting up 1Password environment variables..."
+          task env:setup
+          echo ""
+
+          echo "Step 2/3: Generating environment files..."
+          task env:generate
+          echo ""
+        fi
+
+        # Save mode preference
+        echo "docker" > .dev-mode
+
+        # Start Docker
+        echo "Step 3/3: Starting Docker containers..."
+        docker compose up -d --build --remove-orphans
+        echo ""
+
+        echo "Setup complete!"
+        echo ""
+        echo "Your app is running at:"
+        echo "  Frontend: http://localhost:5173"
+        echo "  Backend:  http://localhost:8000"
+        echo "  API Docs: http://localhost:8000/docs"
+        echo ""
+        echo "Useful commands:"
+        echo "  task dev    - Start development"
+        echo "  task logs   - View logs"
+        echo "  task clean  - Stop and cleanup"
+
+  # === Smart Dev Task ===
+
+  dev_smart:
+    silent: true
+    cmds:
+      - |
+        echo "Starting NBA Oracle development environment..."
+        echo ""
+
+        # Check if initial setup has been run
+        if [ ! -f .dev-mode ]; then
+          HAS_DOCKER_SETUP=$(docker compose ps 2>/dev/null | grep -q "nba-oracle" && echo "yes" || echo "no")
+          HAS_ENV_FILES=$([ -f .env.local ] && echo "yes" || echo "no")
+
+          if [ "$HAS_DOCKER_SETUP" = "no" ] && [ "$HAS_ENV_FILES" = "no" ]; then
+            echo "No development environment detected!"
+            echo ""
+            echo "It looks like this is your first time running the project."
+            echo "Let's run the setup wizard to get you started."
+            echo ""
+            printf "Press Enter to continue with setup, or Ctrl+C to cancel: "
+            read -r
+            echo ""
+            task setup
+            exit 0
+          fi
+        fi
+
+        # Check Docker daemon
+        task helpers:check_docker
+
+        # Sync environment files from 1Password
+        echo "Step 1/2: Syncing environment variables..."
+        if [ -f .1password.yml ]; then
+          task env:generate > /dev/null 2>&1 || echo "   Could not sync (continuing with existing .env)"
+        else
+          echo "   1Password not configured (run 'task env:setup' if needed)"
+        fi
+
+        echo "Step 2/2: Starting Docker containers..."
+        if docker compose ps | grep -q "nba-oracle.*Up"; then
+          echo "   Containers already running, restarting to pick up changes..."
+          docker compose restart
+        else
+          docker compose up -d --build --remove-orphans
+        fi
+        echo ""
+
+        echo "Development environment ready!"
+        echo ""
+        echo "Your app is running at:"
+        echo "  Frontend: http://localhost:5173"
+        echo "  Backend:  http://localhost:8000"
+        echo "  API Docs: http://localhost:8000/docs"
+        echo ""
+        echo "Useful commands:"
+        echo "  task logs   - View logs"
+        echo "  task clean  - Stop and cleanup"
+
+  # === Clean Environment ===
+
+  clean_environment:
+    silent: true
+    vars:
+      ALL: '{{.ALL | default "false"}}'
+    cmds:
+      - |
+        {{if eq .ALL "true"}}
+        echo "CLEAN ALL - Removing all Docker resources..."
+        {{else}}
+        echo "Cleaning up development environment..."
+        {{end}}
+        echo ""
+
+        # Stop Docker containers
+        {{if eq .ALL "true"}}
+        echo "Stopping and removing Docker containers with volumes..."
+        docker compose down -v 2>/dev/null || echo "   No Docker containers running"
+        echo ""
+
+        echo "Removing project Docker images..."
+        docker compose images --format '{{`{{.ID}}`}}' 2>/dev/null | xargs -r docker rmi -f 2>/dev/null || true
+        echo ""
+
+        echo "Cleaning up dangling images..."
+        docker image prune -af > /dev/null 2>&1
+        {{else}}
+        echo "Stopping Docker containers..."
+        docker compose down 2>/dev/null || echo "   No Docker containers running"
+        echo ""
+
+        echo "Cleaning up dangling Docker images..."
+        docker image prune -f > /dev/null 2>&1
+        {{end}}
+
+        {{if eq .ALL "true"}}
+        echo ""
+        echo "Removing development artifacts..."
+        rm -f .dev-mode
+        rm -f .env .env.*
+        echo "   Removed .env files and .dev-mode"
+        echo ""
+        echo "Clean all complete!"
+        echo "   Start fresh with 'task setup'"
+        {{else}}
+        echo ""
+        echo "Cleanup complete!"
+        echo "   Run 'task dev' to restart"
+        {{end}}
+
+  # === Force Update ===
+
+  force_update:
+    silent: true
+    cmds:
+      - |
+        echo "Force updating development environment..."
+        echo ""
+
+        echo "Step 1/2: Regenerating .env files from 1Password..."
+        task env:generate
+        echo ""
+
+        echo "Step 2/2: Rebuilding Docker containers..."
+        docker compose down
+        docker compose up -d --build --remove-orphans
+        echo ""
+
+        echo "Environment fully updated!"
+        echo "  Frontend: http://localhost:5173"
+        echo "  Backend:  http://localhost:8000"

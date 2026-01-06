@@ -1,0 +1,36 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Tests
+tests/
+*_test.py
+test_*.py
+
+# Documentation
+*.md
+docs/
+
+# Local development files
+.env*
+!.env.example

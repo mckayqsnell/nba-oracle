@@ -1,0 +1,93 @@
+version: '3'
+
+# NBA Oracle - Main Taskfile
+# Orchestrates all development tasks via modular includes
+
+# Load environment variables from .env.local for development
+dotenv: ['.env.local']
+
+vars:
+  # Load configuration from .1password.yml if it exists
+  ACCOUNT:
+    sh: '[ -f .1password.yml ] && yq .account .1password.yml | grep -v "^null$" || echo ""'
+  VAULT:
+    sh: '[ -f .1password.yml ] && yq .vault .1password.yml || echo "Private"'
+  REPO_NAME:
+    sh: '[ -f .1password.yml ] && yq .repository .1password.yml || echo "nba-oracle"'
+  ENVIRONMENTS:
+    sh: '[ -f .1password.yml ] && yq -r ".environments | join(\" \")" .1password.yml || echo "local prod"'
+  # Account flag for op commands
+  ACCOUNT_FLAG: '{{if .ACCOUNT}}--account={{.ACCOUNT}}{{end}}'
+
+# Include modular Taskfiles
+includes:
+  env:
+    taskfile: ./tasks/env.yml
+    dir: .
+  helpers:
+    taskfile: ./tasks/helpers.yml
+    dir: .
+
+tasks:
+  # === Main Entry Points ===
+
+  default:
+    desc: "Show help"
+    aliases: [help]
+    silent: true
+    cmds:
+      - task --list
+
+  setup:
+    desc: "First time setup - configure 1Password and start development"
+    interactive: true
+    cmds:
+      - task: helpers:setup_interactive
+
+  dev:
+    desc: "Start development (smart: auto-updates, skips what's done)"
+    cmds:
+      - task: helpers:dev_smart
+
+  clean:
+    desc: "Stop containers and clean up"
+    cmds:
+      - task: helpers:clean_environment
+
+  clean:all:
+    desc: "Full reset - remove everything including volumes and images"
+    cmds:
+      - task: helpers:clean_environment
+        vars:
+          ALL: "true"
+
+  update:
+    desc: "Force update dependencies and environment files"
+    cmds:
+      - task: helpers:force_update
+
+  # === Environment Shorthand ===
+
+  env:
+    desc: "Generate .env files from 1Password"
+    cmds:
+      - task: env:generate
+        vars:
+          ENV: '{{.ENV | default ""}}'
+
+  # === Logging ===
+
+  logs:
+    desc: "Tail all container logs"
+    cmds:
+      - docker compose logs -f
+
+  logs:frontend:
+    desc: "Tail frontend logs"
+    cmds:
+      - docker compose logs -f frontend
+
+  logs:backend:
+    desc: "Tail backend logs"
+    cmds:
+      - docker compose logs -f backend
