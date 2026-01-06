@@ -11,17 +11,15 @@ function App() {
 
   useEffect(() => {
     fetch('/health')
-      .then(res => res.json())
-      .then(data => setHealth(data))
+      .then((res) => res.json())
+      .then((data) => setHealth(data))
       .catch(() => setError('Unable to connect to API'))
   }, [])
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       <div className="container mx-auto px-4 py-16">
-        <h1 className="text-5xl font-bold text-center mb-8">
-          NBA Oracle
-        </h1>
+        <h1 className="text-5xl font-bold text-center mb-8">NBA Oracle</h1>
         <p className="text-xl text-gray-400 text-center mb-12">
           ML-powered NBA game predictions
         </p>
