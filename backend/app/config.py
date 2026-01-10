@@ -11,9 +11,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Existing
     api_env: str = "development"
     debug: bool = True
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:5173"]
+
+    # NBA API
+    balldontlie_api_key: str = ""
 
     @field_validator("cors_origins", mode="before")
     @classmethod

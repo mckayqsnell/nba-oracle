@@ -1,0 +1,31 @@
+# .github/workflows/daily-stats.yml
+name: Daily NBA Stats Update
+
+on:
+  schedule:
+    - cron: '0 10 * * *'  # 10am UTC (5am ET) - before any games
+  workflow_dispatch:  # Manual trigger for testing
+
+jobs:
+  fetch-stats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install nba_api pandas boto3
+
+      - name: Fetch team stats
+        run: python scripts/fetch_daily_stats.py
+
+      - name: Upload to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          aws s3 cp data/team_stats.csv s3://nba-oracle-data/team_stats.csv
