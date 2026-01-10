@@ -25,6 +25,7 @@ task dev
 ## Features
 
 - Real-time NBA game predictions
+- Live score updates every 2 seconds during games
 - Machine learning models trained on historical data
 - Clean, responsive UI
 - RESTful API

@@ -31,7 +31,7 @@ function App() {
       <footer className="border-t border-[#2a2a2a] mt-auto">
         <div className="container mx-auto px-4 py-4">
           <p className="text-gray-600 text-sm text-center">
-            Scores update every 30 seconds during live games
+            Scores update every 2 seconds during live games
           </p>
         </div>
       </footer>

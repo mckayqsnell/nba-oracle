@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import type { Game } from '../types/game'
 import { fetchTodaysGames } from '../api/games'
 
-const POLL_INTERVAL_MS = 30_000 // 30 seconds
+const POLL_INTERVAL_MS = 2_000 // 2 seconds
 
 interface UseGamesResult {
   games: Game[]
