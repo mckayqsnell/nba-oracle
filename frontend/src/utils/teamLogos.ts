@@ -7,6 +7,7 @@ const BALLDONTLIE_TO_ESPN: Record<string, string> = {
   NOP: 'no',
   NYK: 'ny',
   SAS: 'sa',
+  UTA: 'utah',
 }
 
 /**
