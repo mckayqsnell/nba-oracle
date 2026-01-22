@@ -177,8 +177,8 @@ echo ""
 echo -e "${CYAN}Step 5: Environment Configuration${NC}"
 echo "----------------------------------"
 
-REPO_NAME="nba-oracle"
-echo "Repository: $REPO_NAME"
+ITEM_NAME="nba-oracle-api"
+echo "1Password item: $ITEM_NAME"
 echo ""
 
 echo "Which environments do you need?"
@@ -221,10 +221,10 @@ account: $SELECTED_ACCOUNT
 # The vault where your environment variables are stored
 vault: $SELECTED_VAULT
 
-# Your repository/project name
-repository: $REPO_NAME
+# The 1Password item name (Secure Note) containing your secrets
+item: $ITEM_NAME
 
-# List of environments
+# List of environments (sections within the 1Password item)
 environments:
 $(echo "$ENV_ARRAY" | sed 's/^/  /')
 EOF
@@ -240,11 +240,11 @@ echo ""
 echo "Configuration Summary:"
 echo "  Account:      $ACCOUNT_EMAIL"
 echo "  Vault:        $SELECTED_VAULT"
-echo "  Repository:   $REPO_NAME"
+echo "  Item:         $ITEM_NAME"
 echo "  Environments: $ENVIRONMENTS"
 echo ""
 echo "Next steps:"
-echo "  1. Create a Secure Note named '$REPO_NAME' in vault '$SELECTED_VAULT'"
+echo "  1. Create a Secure Note named '$ITEM_NAME' in vault '$SELECTED_VAULT'"
 echo "  2. Add sections for: $ENVIRONMENTS"
 echo "  3. Add environment variables to each section"
 echo "  4. Run 'task env' to generate .env files"

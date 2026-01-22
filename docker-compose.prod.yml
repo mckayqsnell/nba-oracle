@@ -4,15 +4,26 @@
 
 services:
   nginx:
-    image: public.ecr.aws/docker/library/nginx:1.28-alpine
+    # nginx-certbot: handles SSL cert creation and auto-renewal automatically
+    # https://github.com/JonasAlfredsson/docker-nginx-certbot
+    image: jonasal/nginx-certbot:5-alpine
     container_name: nba-oracle-nginx-prod
+    env_file:
+      - .env.prod
+    # Environment overrides (env_file provides CERTBOT_EMAIL)
+    # Uncomment STAGING=1 for testing to avoid Let's Encrypt rate limits
+    # environment:
+    #   - STAGING=1
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
-      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # User nginx configs (nginx-certbot uses user_conf.d, not conf.d)
+      - ./infrastructure/nginx/user_conf.d:/etc/nginx/user_conf.d:ro
+      # Basic auth password file (created by user_data.sh during EC2 bootstrap)
+      - /etc/nginx/.htpasswd-nba-oracle:/etc/nginx/.htpasswd-nba-oracle:ro
+      # SSL certificates (managed by nginx-certbot container)
+      - nginx_letsencrypt:/etc/letsencrypt
     depends_on:
       backend:
         condition: service_healthy
@@ -24,7 +35,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 60s
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -41,7 +52,7 @@ services:
         max-file: "3"
 
   backend:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-your-username}/nba-oracle-backend:${IMAGE_TAG:-latest}
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-mckay-snell}/nba-oracle-api:${IMAGE_TAG:-latest}
     container_name: nba-oracle-backend-prod
     env_file:
       - .env.prod
@@ -72,3 +83,7 @@ services:
 networks:
   nba-oracle-network:
     driver: bridge
+
+volumes:
+  nginx_letsencrypt:
+    # Persists SSL certificates across container restarts

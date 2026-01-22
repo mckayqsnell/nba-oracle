@@ -1,0 +1,129 @@
+version: '3'
+
+# Infrastructure Management Tasks
+# Terraform and deployment operations
+
+tasks:
+  # === Terraform Operations ===
+
+  init:
+    desc: "Initialize Terraform"
+    dir: infrastructure/terraform
+    cmds:
+      - ./terraform-apply.sh init
+
+  plan:
+    desc: "Run Terraform plan"
+    dir: infrastructure/terraform
+    cmds:
+      - ./terraform-apply.sh plan
+
+  apply:
+    desc: "Apply Terraform changes"
+    dir: infrastructure/terraform
+    cmds:
+      - ./terraform-apply.sh apply
+
+  destroy:
+    desc: "Destroy Terraform infrastructure (dangerous)"
+    dir: infrastructure/terraform
+    cmds:
+      - ./terraform-apply.sh destroy
+
+  output:
+    desc: "Show Terraform outputs"
+    dir: infrastructure/terraform
+    cmds:
+      - ./terraform-apply.sh output
+
+  # === S3 State Backend Setup ===
+
+  state:init:
+    desc: "Create S3 bucket for Terraform state (run once)"
+    cmds:
+      - |
+        echo "Creating S3 bucket for Terraform state..."
+        aws s3api create-bucket \
+          --bucket nba-oracle-terraform-state \
+          --region us-west-2 \
+          --create-bucket-configuration LocationConstraint=us-west-2 \
+          --profile personal
+
+        echo "Enabling versioning..."
+        aws s3api put-bucket-versioning \
+          --bucket nba-oracle-terraform-state \
+          --versioning-configuration Status=Enabled \
+          --profile personal
+
+        echo "Enabling encryption..."
+        aws s3api put-bucket-encryption \
+          --bucket nba-oracle-terraform-state \
+          --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}' \
+          --profile personal
+
+        echo "Blocking public access..."
+        aws s3api put-public-access-block \
+          --bucket nba-oracle-terraform-state \
+          --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true \
+          --profile personal
+
+        echo "S3 state bucket created successfully!"
+
+  # === EC2 SSH Access ===
+
+  ssh:
+    desc: "SSH into production EC2 instance"
+    silent: true
+    cmds:
+      - |
+        # Get EC2 host from 1Password
+        EC2_HOST=$(op read "op://NBA-Oracle/nba-oracle-ec2/host" 2>/dev/null) || {
+          echo "Error: Could not get EC2 host from 1Password"
+          echo "Make sure 'nba-oracle-ec2' item exists in NBA-Oracle vault"
+          exit 1
+        }
+
+        echo "Connecting to EC2 at $EC2_HOST..."
+        ssh -o StrictHostKeyChecking=accept-new ec2-user@"$EC2_HOST"
+
+  # === Docker Image Management ===
+
+  build:prod:
+    desc: "Build production Docker image locally"
+    cmds:
+      - |
+        echo "Building production Docker image..."
+        docker build \
+          -f backend/Dockerfile \
+          -t nba-oracle-api:local \
+          --label "build.timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          ./backend
+        echo "Image built: nba-oracle-api:local"
+
+  # === Deployment Status ===
+
+  status:
+    desc: "Check production deployment status"
+    silent: true
+    cmds:
+      - |
+        # Get EC2 host from 1Password
+        EC2_HOST=$(op read "op://NBA-Oracle/nba-oracle-ec2/host" 2>/dev/null) || {
+          echo "Error: Could not get EC2 host from 1Password"
+          exit 1
+        }
+
+        echo "Checking production status..."
+        echo ""
+
+        # Check if API is responding
+        echo "API Health:"
+        if curl -sf "http://${EC2_HOST}:80/health" >/dev/null 2>&1; then
+          echo "  Status: Online"
+          curl -s "http://${EC2_HOST}:80/health" | jq . 2>/dev/null || echo "  (response received)"
+        else
+          echo "  Status: Offline or unreachable"
+        fi
+
+        echo ""
+        echo "SSH into the server with: task infra:ssh"

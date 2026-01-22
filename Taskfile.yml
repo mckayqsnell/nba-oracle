@@ -12,8 +12,9 @@ vars:
     sh: '[ -f .1password.yml ] && yq .account .1password.yml | grep -v "^null$" || echo ""'
   VAULT:
     sh: '[ -f .1password.yml ] && yq .vault .1password.yml || echo "Private"'
-  REPO_NAME:
-    sh: '[ -f .1password.yml ] && yq .repository .1password.yml || echo "nba-oracle"'
+  # 1Password item name (supports both 'item' and legacy 'repository' field)
+  ITEM_NAME:
+    sh: '[ -f .1password.yml ] && (yq ".item // .repository" .1password.yml | grep -v "^null$") || echo "nba-oracle-api"'
   ENVIRONMENTS:
     sh: '[ -f .1password.yml ] && yq -r ".environments | join(\" \")" .1password.yml || echo "local prod"'
   # Account flag for op commands
@@ -26,6 +27,9 @@ includes:
     dir: .
   helpers:
     taskfile: ./tasks/helpers.yml
+    dir: .
+  infra:
+    taskfile: ./tasks/infra.yml
     dir: .
 
 tasks:

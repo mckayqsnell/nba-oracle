@@ -20,8 +20,8 @@ if [ ! -f ".1password.yml" ]; then
     exit 1
 fi
 
-# Load configuration from YAML
-IFS=$'\t' read -r ACCOUNT VAULT REPO < <(yq -r '[.account, .vault, .repository] | @tsv' .1password.yml)
+# Load configuration from YAML (supports both 'item' and legacy 'repository' field)
+IFS=$'\t' read -r ACCOUNT VAULT ITEM < <(yq -r '[.account, .vault, (.item // .repository)] | @tsv' .1password.yml)
 
 # Validate required fields
 if [ -z "$VAULT" ] || [ "$VAULT" = "null" ]; then
@@ -29,8 +29,8 @@ if [ -z "$VAULT" ] || [ "$VAULT" = "null" ]; then
     exit 1
 fi
 
-if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
-    echo -e "${RED}Missing 'repository' in .1password.yml${NC}"
+if [ -z "$ITEM" ] || [ "$ITEM" = "null" ]; then
+    echo -e "${RED}Missing 'item' in .1password.yml${NC}"
     exit 1
 fi
 
@@ -42,7 +42,7 @@ if [ -n "$ACCOUNT" ] && [ "$ACCOUNT" != "null" ]; then
     ACCOUNT_FLAG="--account=$ACCOUNT"
 fi
 
-ITEM_NAME="$REPO"
+ITEM_NAME="$ITEM"
 OUTPUT_FILE=".env.${ENV}"
 
 echo -e "${BLUE}Generating environment file from 1Password${NC}"

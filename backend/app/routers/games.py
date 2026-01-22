@@ -2,12 +2,16 @@
 Games router - HTTP endpoints for game data.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.core.security import verify_api_key
 from app.models.schemas import GameListResponse
 from app.services.game_service import GameServiceDep
 
-router = APIRouter()
+# All routes in this router require API key authentication
+router = APIRouter(
+    dependencies=[Depends(verify_api_key)],
+)
 
 
 @router.get("/today", response_model=GameListResponse)

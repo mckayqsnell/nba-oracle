@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     debug: bool = True
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:5173"]
 
+    # API Security (empty = skip verification, useful for local dev)
+    api_key_hash: str = ""
+
     # NBA API
     balldontlie_api_key: str = ""
 

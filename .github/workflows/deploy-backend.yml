@@ -1,0 +1,235 @@
+name: Deploy Backend to Production
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'docker-compose.prod.yml'
+      - 'infrastructure/nginx/**'
+      - '.github/workflows/deploy-backend.yml'
+      - '.github/workflows/build-and-push.yml'
+  workflow_dispatch:
+    inputs:
+      deployment_message:
+        description: 'Deployment message/reason'
+        required: false
+        default: 'Manual deployment'
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-and-push.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Load secrets from 1Password
+        uses: ./.github/actions/load-secrets
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Add deployment metadata to .env.prod
+        run: |
+          cat >> .env.prod << EOF
+
+          # Deployment metadata
+          IMAGE_TAG=${{ needs.build.outputs.image-tag }}
+          DEPLOYED_BY=${{ github.actor }}
+          COMMIT_SHA=${{ github.sha }}
+          DEPLOYED_AT=$(date -u '+%Y-%m-%d_%H:%M:%S_UTC')
+          EOF
+
+          echo "✅ Deployment metadata added to .env.prod"
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ env.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ env.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Test SSH connection
+        run: |
+          ssh -i ~/.ssh/deploy_key -o ConnectTimeout=10 ec2-user@${{ env.EC2_HOST }} 'echo "✅ SSH connection successful"'
+
+      - name: Backup current deployment
+        run: |
+          ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} '
+            cd ~/nba-oracle || mkdir -p ~/nba-oracle && cd ~/nba-oracle
+
+            # Create backup if deployment exists
+            if [ -f docker-compose.prod.yml ]; then
+              BACKUP_DIR="backup_$(date +%Y%m%d_%H%M%S)"
+              mkdir -p "$BACKUP_DIR"
+              cp -f .env.prod "$BACKUP_DIR/" 2>/dev/null || true
+              cp -f docker-compose.prod.yml "$BACKUP_DIR/" 2>/dev/null || true
+              cp -rf infrastructure/nginx "$BACKUP_DIR/" 2>/dev/null || true
+              echo "✅ Backup created: $BACKUP_DIR"
+
+              # Keep only last 3 backups
+              ls -1dt backup_* 2>/dev/null | tail -n +4 | xargs -r rm -rf
+            else
+              echo "ℹ️ First deployment - no backup needed"
+            fi
+          '
+
+      - name: Copy deployment files
+        run: |
+          scp -i ~/.ssh/deploy_key .env.prod ec2-user@${{ env.EC2_HOST }}:/tmp/.env.prod
+          scp -i ~/.ssh/deploy_key docker-compose.prod.yml ec2-user@${{ env.EC2_HOST }}:/tmp/docker-compose.prod.yml
+
+          # Copy nginx config (user_conf.d for nginx-certbot image)
+          ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} 'mkdir -p /tmp/nginx-config/user_conf.d'
+          scp -i ~/.ssh/deploy_key infrastructure/nginx/user_conf.d/api.conf ec2-user@${{ env.EC2_HOST }}:/tmp/nginx-config/user_conf.d/
+
+          echo "✅ Deployment files copied"
+
+      - name: Deploy to EC2
+        run: |
+          ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} '
+            set -e
+            cd ~/nba-oracle
+
+            echo "🔐 Logging into GHCR"
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            echo "📥 Pulling new image"
+            REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr "[:upper:]" "[:lower:]")
+            docker pull ghcr.io/${REPO_OWNER}/nba-oracle-api:${{ needs.build.outputs.image-tag }}
+
+            echo "📝 Updating deployment files"
+            cp /tmp/.env.prod .env.prod
+            cp /tmp/docker-compose.prod.yml docker-compose.prod.yml
+            rm -rf infrastructure/nginx
+            mkdir -p infrastructure
+            mv /tmp/nginx-config infrastructure/nginx
+
+            echo "📝 Loading environment"
+            set -a && source .env.prod && set +a
+            export IMAGE_TAG=${{ needs.build.outputs.image-tag }}
+            export GITHUB_REPOSITORY_OWNER="${REPO_OWNER}"
+
+            echo "🔄 Stopping current deployment"
+            docker compose -f docker-compose.prod.yml down --remove-orphans || true
+
+            echo "🚀 Starting new deployment"
+            docker compose -f docker-compose.prod.yml up -d
+
+            echo "⏳ Waiting for services to start..."
+            sleep 15
+
+            echo "✅ Deployment complete"
+          '
+
+      - name: Health check
+        id: health
+        run: |
+          MAX_RETRIES=10
+          RETRY=0
+
+          while [ $RETRY -lt $MAX_RETRIES ]; do
+            RESPONSE=$(ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} \
+              'curl -s -o /dev/null -w "%{http_code}" http://localhost/health' || echo "000")
+
+            if [ "$RESPONSE" = "200" ]; then
+              echo "✅ Health check passed!"
+              echo "status=success" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            RETRY=$((RETRY + 1))
+            echo "⏳ Health check attempt $RETRY/$MAX_RETRIES (HTTP $RESPONSE)"
+            sleep 5
+          done
+
+          echo "❌ Health check failed after $MAX_RETRIES attempts"
+          echo "status=failed" >> $GITHUB_OUTPUT
+          exit 1
+
+      - name: Rollback on failure
+        if: failure() && steps.health.outputs.status == 'failed'
+        run: |
+          echo "🔄 Initiating rollback..."
+
+          ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} '
+            cd ~/nba-oracle
+
+            # Find most recent backup
+            BACKUP=$(ls -1dt backup_* 2>/dev/null | head -1)
+
+            if [ -z "$BACKUP" ]; then
+              echo "❌ No backup found for rollback"
+              exit 1
+            fi
+
+            echo "📦 Rolling back to: $BACKUP"
+
+            # Restore files
+            cp "$BACKUP/.env.prod" .env.prod 2>/dev/null || true
+            cp "$BACKUP/docker-compose.prod.yml" docker-compose.prod.yml 2>/dev/null || true
+            rm -rf infrastructure/nginx && cp -r "$BACKUP/nginx" infrastructure/ 2>/dev/null || true
+
+            # Reload environment and restart
+            set -a && source .env.prod && set +a
+            docker compose -f docker-compose.prod.yml down --remove-orphans || true
+            docker compose -f docker-compose.prod.yml up -d
+
+            sleep 15
+
+            # Verify rollback
+            if curl -f -s http://localhost/health > /dev/null; then
+              echo "✅ Rollback successful"
+            else
+              echo "❌ Rollback health check failed"
+            fi
+          '
+
+      - name: Cleanup
+        if: success()
+        run: |
+          ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} '
+            echo "🧹 Cleaning up old Docker images"
+            docker image prune -f
+
+            # Keep only last 3 nba-oracle-api images
+            REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr "[:upper:]" "[:lower:]")
+            docker images "ghcr.io/${REPO_OWNER}/nba-oracle-api" --format "{{.ID}} {{.Tag}}" | \
+              grep -v "latest" | tail -n +4 | awk "{print \$1}" | xargs -r docker rmi -f 2>/dev/null || true
+
+            docker logout ghcr.io
+            echo "✅ Cleanup complete"
+          '
+
+          # Clean up local files
+          rm -f .env.prod ~/.ssh/deploy_key
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: \`${{ needs.build.outputs.image-tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployed by**: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "### ✅ Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**URL**: https://api.nbaoracle.com" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Deployment Failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Check the workflow logs for details." >> $GITHUB_STEP_SUMMARY
+          fi

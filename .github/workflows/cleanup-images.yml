@@ -1,0 +1,132 @@
+name: Cleanup Old Container Images
+
+on:
+  schedule:
+    # Run weekly on Sunday at 2 AM UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      keep_versions:
+        description: 'Number of versions to keep'
+        required: false
+        default: '5'
+      dry_run:
+        description: 'Dry run (show what would be deleted)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  cleanup-ghcr:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Cleanup container images
+        run: |
+          echo "🔍 Starting container image cleanup..."
+
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          PACKAGE_NAME="nba-oracle-api"
+          KEEP_VERSIONS=${{ github.event.inputs.keep_versions || 5 }}
+          DRY_RUN=${{ github.event.inputs.dry_run || false }}
+
+          echo "Configuration:"
+          echo "  Repository: ${REPO_OWNER}/${PACKAGE_NAME}"
+          echo "  Keep versions: $KEEP_VERSIONS"
+          echo "  Dry run: $DRY_RUN"
+          echo ""
+
+          # Function to delete a specific version
+          delete_version() {
+            local version_id=$1
+            local tag=$2
+
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "    🔍 [DRY RUN] Would delete: $tag (ID: $version_id)"
+            else
+              echo "    🗑️  Deleting: $tag (ID: $version_id)"
+              DELETE_RESULT=$(curl -s -X DELETE \
+                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/users/${REPO_OWNER}/packages/container/${PACKAGE_NAME}/versions/${version_id}" \
+                -w "\n%{http_code}")
+
+              HTTP_CODE=$(echo "$DELETE_RESULT" | tail -n 1)
+
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "      ✅ Deleted successfully"
+              else
+                echo "      ❌ Failed to delete (HTTP $HTTP_CODE)"
+              fi
+            fi
+          }
+
+          # Get all versions
+          echo "📦 Fetching all package versions..."
+          ALL_VERSIONS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/users/${REPO_OWNER}/packages/container/${PACKAGE_NAME}/versions?per_page=100")
+
+          # Check if package exists
+          if echo "$ALL_VERSIONS" | jq -e '.message' > /dev/null 2>&1; then
+            echo "ℹ️ Package not found or no versions. Nothing to clean up."
+            exit 0
+          fi
+
+          # Process production images (keep last N)
+          echo ""
+          echo "🚀 Processing production images (keeping last $KEEP_VERSIONS)..."
+          PROD_VERSIONS=$(echo "$ALL_VERSIONS" | \
+            jq -c '[.[] | select(.metadata.container.tags[] | startswith("prod-"))] | sort_by(.created_at) | reverse')
+
+          PROD_COUNT=$(echo "$PROD_VERSIONS" | jq 'length')
+          echo "  Found $PROD_COUNT production images"
+
+          if [ "$PROD_COUNT" -gt "$KEEP_VERSIONS" ]; then
+            echo "$PROD_VERSIONS" | jq -c ".[$KEEP_VERSIONS:][]" | while read -r version; do
+              VERSION_ID=$(echo "$version" | jq -r '.id')
+              TAGS=$(echo "$version" | jq -r '.metadata.container.tags | join(", ")')
+              delete_version "$VERSION_ID" "$TAGS"
+            done
+          else
+            echo "  ✅ No production images to delete"
+          fi
+
+          # Process untagged images (delete all)
+          echo ""
+          echo "❓ Processing untagged images (deleting all)..."
+          UNTAGGED_VERSIONS=$(echo "$ALL_VERSIONS" | \
+            jq -c '[.[] | select(.metadata.container.tags | length == 0)]')
+
+          UNTAGGED_COUNT=$(echo "$UNTAGGED_VERSIONS" | jq 'length')
+          echo "  Found $UNTAGGED_COUNT untagged images"
+
+          if [ "$UNTAGGED_COUNT" -gt "0" ]; then
+            echo "$UNTAGGED_VERSIONS" | jq -c '.[]' | while read -r version; do
+              VERSION_ID=$(echo "$version" | jq -r '.id')
+              CREATED=$(echo "$version" | jq -r '.created_at')
+              delete_version "$VERSION_ID" "untagged (created: $CREATED)"
+            done
+          else
+            echo "  ✅ No untagged images to delete"
+          fi
+
+          # Final summary
+          echo ""
+          echo "📊 Cleanup completed!"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo ""
+            echo "🔍 This was a dry run. No images were actually deleted."
+          fi
+
+      - name: Cleanup summary
+        if: always()
+        run: |
+          echo "## 🧹 Container Image Cleanup Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Keep versions**: ${{ github.event.inputs.keep_versions || 5 }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dry run**: ${{ github.event.inputs.dry_run || false }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY

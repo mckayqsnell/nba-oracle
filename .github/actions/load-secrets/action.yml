@@ -1,0 +1,77 @@
+name: 'Load Secrets from 1Password'
+description: 'Loads environment secrets from 1Password for deployment'
+
+inputs:
+  service-account-token:
+    description: '1Password service account token'
+    required: true
+
+outputs:
+  ec2-host:
+    description: 'EC2 host IP/hostname'
+    value: ${{ steps.load-secrets.outputs.EC2_HOST }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Load secrets from 1Password
+      id: load-secrets
+      uses: 1password/load-secrets-action@v3
+      with:
+        export-env: true
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ inputs.service-account-token }}
+        # EC2 connection
+        EC2_HOST: op://NBA-Oracle/nba-oracle-ec2/host
+        EC2_SSH_KEY: op://NBA-Oracle/nba-oracle-ec2-ssh/private key
+        # API secrets from nba-oracle-api secure note (prod section)
+        API_KEY_HASH: op://NBA-Oracle/nba-oracle-api/prod/API_KEY_HASH
+        BALLDONTLIE_API_KEY: op://NBA-Oracle/nba-oracle-api/prod/BALLDONTLIE_API_KEY
+        # SSL certificate email (for Let's Encrypt notifications)
+        CERTBOT_EMAIL: op://NBA-Oracle/nba-oracle-api/prod/CERTBOT_EMAIL
+
+    - name: Create .env.prod file
+      shell: bash
+      run: |
+        ENV_FILE=".env.prod"
+
+        echo "📝 Creating ${ENV_FILE} from 1Password secrets"
+
+        cat > "${ENV_FILE}" << 'ENVFILE'
+        # ================================================
+        # Environment Configuration
+        # Source: 1Password/NBA-Oracle/nba-oracle-api/prod
+        # ================================================
+        # DO NOT COMMIT THIS FILE TO GIT
+        # ================================================
+
+        ENVFILE
+
+        # Append variables (avoid heredoc variable expansion issues)
+        {
+          echo "# Application"
+          echo "API_ENV=production"
+          echo "DEBUG=false"
+          echo ""
+          echo "# API Security"
+          echo "API_KEY_HASH=${API_KEY_HASH}"
+          echo ""
+          echo "# External APIs"
+          echo "BALLDONTLIE_API_KEY=${BALLDONTLIE_API_KEY}"
+          echo ""
+          echo "# SSL/TLS (for nginx-certbot container)"
+          echo "CERTBOT_EMAIL=${CERTBOT_EMAIL}"
+        } >> "${ENV_FILE}"
+
+        echo "✅ ${ENV_FILE} created successfully"
+
+    - name: Verify .env.prod file
+      shell: bash
+      run: |
+        if [ ! -f ".env.prod" ]; then
+          echo "❌ Error: .env.prod was not created"
+          exit 1
+        fi
+
+        echo "✅ .env.prod exists"
+        echo "📋 Variables count: $(grep -c '^[A-Z_]*=' .env.prod || echo 0)"
