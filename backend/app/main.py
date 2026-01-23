@@ -70,6 +70,18 @@ async def logging_middleware(request: Request, call_next) -> Response:
 app.include_router(games.router, prefix="/api/games", tags=["games"])
 
 
+@app.get("/")
+async def root():
+    """API root endpoint - returns basic API information."""
+    return {
+        "name": "NBA Oracle API",
+        "version": "0.1.0",
+        "status": "ok",
+        "docs": "/docs",
+    }
+
+
 @app.get("/health")
 async def health_check():
+    """Health check endpoint for monitoring and load balancers."""
     return {"status": "healthy", "environment": settings.api_env}
