@@ -81,6 +81,12 @@ async def root():
     }
 
 
+@app.get("/favicon.ico", status_code=204)
+async def favicon():
+    """Return empty response for favicon requests."""
+    return Response(status_code=204)
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint for monitoring and load balancers."""
