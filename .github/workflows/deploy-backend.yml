@@ -136,10 +136,11 @@ jobs:
           MAX_RETRIES=10
           RETRY=0
 
-          echo "🔍 Testing backend container directly (port 8000)..."
+          echo "🔍 Testing backend container health (via docker exec)..."
           while [ $RETRY -lt $MAX_RETRIES ]; do
+            # Use docker exec since backend port isn't exposed to host
             RESPONSE=$(ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} \
-              'curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health' || echo "000")
+              'docker exec nba-oracle-backend-prod python -c "import urllib.request; r=urllib.request.urlopen(\"http://localhost:8000/health\", timeout=5); print(r.status)" 2>/dev/null' || echo "000")
 
             if [ "$RESPONSE" = "200" ]; then
               echo "✅ Backend container health check passed!"
@@ -147,7 +148,7 @@ jobs:
             fi
 
             RETRY=$((RETRY + 1))
-            echo "⏳ Backend health attempt $RETRY/$MAX_RETRIES (HTTP $RESPONSE)"
+            echo "⏳ Backend health attempt $RETRY/$MAX_RETRIES (status: $RESPONSE)"
             sleep 5
           done
 
@@ -166,6 +167,9 @@ jobs:
 
             if [ "$RESPONSE" = "200" ]; then
               echo "✅ Public API health check passed!"
+              # Mark this deployment as healthy for future rollback decisions
+              ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} \
+                'touch ~/nba-oracle/.deployment_healthy'
               echo "status=success" >> $GITHUB_OUTPUT
               exit 0
             fi
@@ -203,6 +207,13 @@ jobs:
           ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} '
             cd ~/nba-oracle
 
+            # Check if previous deployment was healthy
+            if [ ! -f ".deployment_healthy" ]; then
+              echo "ℹ️ No previous healthy deployment found"
+              echo "⏭️ Skipping rollback (nothing healthy to roll back to)"
+              exit 0
+            fi
+
             # Find most recent backup
             BACKUP=$(ls -1dt backup_* 2>/dev/null | head -1)
 
@@ -212,8 +223,7 @@ jobs:
               exit 0
             fi
 
-            # Check if the backup had a healthy deployment
-            # We can check if the old image exists locally
+            # Check if the backup image exists locally
             OLD_IMAGE_TAG=""
             if [ -f "$BACKUP/.env.prod" ]; then
               OLD_IMAGE_TAG=$(grep "^IMAGE_TAG=" "$BACKUP/.env.prod" | cut -d= -f2 || true)
@@ -227,6 +237,9 @@ jobs:
                 exit 0
               fi
             fi
+
+            # Remove healthy marker since we are rolling back
+            rm -f .deployment_healthy
 
             echo "📦 Rolling back to: $BACKUP"
 
@@ -243,9 +256,10 @@ jobs:
 
             sleep 15
 
-            # Verify rollback - check backend directly
-            if curl -f -s http://localhost:8000/health > /dev/null; then
+            # Verify rollback - check backend via docker exec
+            if docker exec nba-oracle-backend-prod python -c "import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\", timeout=5)" 2>/dev/null; then
               echo "✅ Rollback successful"
+              touch .deployment_healthy
             else
               echo "❌ Rollback health check failed - manual intervention required"
             fi
