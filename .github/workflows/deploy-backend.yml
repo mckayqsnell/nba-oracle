@@ -136,29 +136,69 @@ jobs:
           MAX_RETRIES=10
           RETRY=0
 
+          echo "🔍 Testing backend container directly (port 8000)..."
           while [ $RETRY -lt $MAX_RETRIES ]; do
             RESPONSE=$(ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} \
-              'curl -s -o /dev/null -w "%{http_code}" http://localhost/health' || echo "000")
+              'curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health' || echo "000")
 
             if [ "$RESPONSE" = "200" ]; then
-              echo "✅ Health check passed!"
+              echo "✅ Backend container health check passed!"
+              break
+            fi
+
+            RETRY=$((RETRY + 1))
+            echo "⏳ Backend health attempt $RETRY/$MAX_RETRIES (HTTP $RESPONSE)"
+            sleep 5
+          done
+
+          if [ "$RESPONSE" != "200" ]; then
+            echo "❌ Backend health check failed after $MAX_RETRIES attempts"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo ""
+          echo "🌐 Testing public API endpoint (https://api.nbaoracle.com)..."
+          RETRY=0
+          while [ $RETRY -lt $MAX_RETRIES ]; do
+            # Test from GitHub runner (external), not from EC2
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://api.nbaoracle.com/health || echo "000")
+
+            if [ "$RESPONSE" = "200" ]; then
+              echo "✅ Public API health check passed!"
               echo "status=success" >> $GITHUB_OUTPUT
               exit 0
             fi
 
             RETRY=$((RETRY + 1))
-            echo "⏳ Health check attempt $RETRY/$MAX_RETRIES (HTTP $RESPONSE)"
+            echo "⏳ Public API health attempt $RETRY/$MAX_RETRIES (HTTP $RESPONSE)"
             sleep 5
           done
 
-          echo "❌ Health check failed after $MAX_RETRIES attempts"
+          echo "❌ Public API health check failed after $MAX_RETRIES attempts"
           echo "status=failed" >> $GITHUB_OUTPUT
           exit 1
+
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          echo "📋 Fetching container logs for debugging..."
+          ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} '
+            cd ~/nba-oracle
+            echo "=== Backend Container Logs (last 50 lines) ==="
+            docker logs --tail 50 nba-oracle-backend-prod 2>&1 || echo "No backend container logs available"
+            echo ""
+            echo "=== Nginx Container Logs (last 50 lines) ==="
+            docker logs --tail 50 nba-oracle-nginx-prod 2>&1 || echo "No nginx container logs available"
+            echo ""
+            echo "=== Container Status ==="
+            docker ps -a --filter "name=nba-oracle" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          '
 
       - name: Rollback on failure
         if: failure() && steps.health.outputs.status == 'failed'
         run: |
-          echo "🔄 Initiating rollback..."
+          echo "🔄 Checking if rollback is appropriate..."
 
           ssh -i ~/.ssh/deploy_key ec2-user@${{ env.EC2_HOST }} '
             cd ~/nba-oracle
@@ -167,8 +207,25 @@ jobs:
             BACKUP=$(ls -1dt backup_* 2>/dev/null | head -1)
 
             if [ -z "$BACKUP" ]; then
-              echo "❌ No backup found for rollback"
-              exit 1
+              echo "ℹ️ No backup found - this appears to be the first deployment"
+              echo "⏭️ Skipping rollback (nothing to roll back to)"
+              exit 0
+            fi
+
+            # Check if the backup had a healthy deployment
+            # We can check if the old image exists locally
+            OLD_IMAGE_TAG=""
+            if [ -f "$BACKUP/.env.prod" ]; then
+              OLD_IMAGE_TAG=$(grep "^IMAGE_TAG=" "$BACKUP/.env.prod" | cut -d= -f2 || true)
+            fi
+
+            if [ -n "$OLD_IMAGE_TAG" ]; then
+              REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr "[:upper:]" "[:lower:]")
+              if ! docker image inspect "ghcr.io/${REPO_OWNER}/nba-oracle-api:${OLD_IMAGE_TAG}" >/dev/null 2>&1; then
+                echo "⚠️ Previous image (${OLD_IMAGE_TAG}) not available locally"
+                echo "⏭️ Skipping rollback (previous deployment image not cached)"
+                exit 0
+              fi
             fi
 
             echo "📦 Rolling back to: $BACKUP"
@@ -180,16 +237,17 @@ jobs:
 
             # Reload environment and restart
             set -a && source .env.prod && set +a
+            export GITHUB_REPOSITORY_OWNER=$(echo "${{ github.repository_owner }}" | tr "[:upper:]" "[:lower:]")
             docker compose -f docker-compose.prod.yml down --remove-orphans || true
             docker compose -f docker-compose.prod.yml up -d
 
             sleep 15
 
-            # Verify rollback
-            if curl -f -s http://localhost/health > /dev/null; then
+            # Verify rollback - check backend directly
+            if curl -f -s http://localhost:8000/health > /dev/null; then
               echo "✅ Rollback successful"
             else
-              echo "❌ Rollback health check failed"
+              echo "❌ Rollback health check failed - manual intervention required"
             fi
           '
 
