@@ -3,181 +3,199 @@
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         PRODUCTION                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────┐         ┌─────────────────────────────────┐    │
-│  │   Vercel    │         │      EC2 (t3.micro ~$8/mo)      │    │
-│  │  (FREE)     │         │  ┌─────────┐    ┌───────────┐   │    │
-│  │             │  HTTPS  │  │  nginx  │────│  FastAPI  │   │    │
-│  │  React SPA  │────────▶│  │ :80/443 │    │   :8000   │   │    │
-│  │  (static)   │         │  └─────────┘    └───────────┘   │    │
-│  │             │         │                  │              │    │
-│  └─────────────┘         │           ┌─────┴─────┐        │    │
-│                          │           │ ML Models │        │    │
-│                          │           │ (.joblib) │        │    │
-│                          └─────────────────────────────────┘    │
-│                                                                  │
-│  Managed by: Terraform    Images from: GitHub Container Registry │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           PRODUCTION ARCHITECTURE                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Browser                                                                    │
+│      │                                                                       │
+│      ▼                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │  nbaoracle.com (Vercel - FREE)                                          ││
+│  │  ┌─────────────────┐    ┌─────────────────────────────────────────────┐ ││
+│  │  │   React SPA     │    │  Serverless Functions (BFF)                 │ ││
+│  │  │   (static)      │    │  ┌─────────────────────────────────────┐    │ ││
+│  │  │                 │───▶│  │ api/[...path].ts (catch-all proxy)  │    │ ││
+│  │  │                 │    │  │ - Injects X-API-Key header          │    │ ││
+│  │  │                 │    │  │ - Configurable per-endpoint         │    │ ││
+│  │  └─────────────────┘    │  └─────────────────────────────────────┘    │ ││
+│  └─────────────────────────┴───────────────────────────────────────────────┘│
+│                                        │                                     │
+│                                        │ HTTPS (API key in header)           │
+│                                        ▼                                     │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │  api.nbaoracle.com (EC2 t3.micro ~$8/mo)                                ││
+│  │  ┌─────────────────┐    ┌─────────────────┐    ┌──────────────────┐    ││
+│  │  │  nginx-certbot  │───▶│    FastAPI      │───▶│    ML Models     │    ││
+│  │  │  (SSL + proxy)  │    │    Backend      │    │   (.joblib)      │    ││
+│  │  │  :80 / :443     │    │    :8000        │    └──────────────────┘    ││
+│  │  └─────────────────┘    └─────────────────┘                            ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+│                                                                              │
+│  Infrastructure: Terraform          CI/CD: GitHub Actions + 1Password        │
+│  Images: GitHub Container Registry  Monitoring: CloudWatch                   │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+## Live URLs
+
+| Service | URL | Purpose |
+|---------|-----|---------|
+| Frontend | https://nbaoracle.com | React app |
+| Backend API | https://api.nbaoracle.com | FastAPI backend |
+| API Docs | https://api.nbaoracle.com/docs | Swagger UI (htpasswd protected) |
 
 ## Cost Estimate
 
 | Service | Cost |
-| ------- | ---- |
-| Vercel (frontend) | Free |
+|---------|------|
+| Vercel (frontend + serverless) | Free |
 | EC2 t3.micro (backend) | ~$8/mo (or free tier eligible) |
-| Domain (optional) | ~$12/yr |
-| **Total** | **~$8/mo or less** |
+| Domain (nbaoracle.com) | ~$12/yr |
+| **Total** | **~$8/mo** |
 
 ---
 
 ## Frontend (Vercel)
 
-The frontend is deployed as a static site to Vercel's free tier.
+The frontend deploys to Vercel as a static React app with serverless functions.
 
-### Setup
+### Serverless Proxy (BFF Pattern)
 
-1. Connect your GitHub repository to Vercel
-2. Configure build settings:
-   - **Framework Preset**: Vite
-   - **Build Command**: `pnpm build`
-   - **Output Directory**: `dist`
-   - **Install Command**: `pnpm install`
+API requests go through Vercel serverless functions to keep the API key secure:
 
-3. Set environment variables:
-   ```
-   VITE_API_URL=https://api.your-domain.com
-   ```
+```
+Browser → /api/games/today → Vercel Function → api.nbaoracle.com/api/games/today
+                                    ↓
+                          Adds X-API-Key header
+```
 
-4. Deploy triggers automatically on push to `main`
+**Catch-all proxy**: `api/[...path].ts` handles all `/api/*` requests with:
+- Automatic API key injection (from `API_KEY` env var)
+- Per-endpoint configuration (caching, auth bypass, methods)
+- Easy to extend for future endpoints
 
-### Custom Domain (Optional)
+```typescript
+// Example: endpoint-specific config in api/[...path].ts
+const endpointConfig = {
+  'games/today': { cacheDuration: 30 },
+  'health': { cacheDuration: 0, skipApiKey: true },
+}
+```
 
-1. Add domain in Vercel project settings
-2. Update DNS records as instructed
-3. SSL is automatic
+### Environment Variables (Vercel Dashboard)
+
+| Variable | Description |
+|----------|-------------|
+| `BACKEND_URL` | `https://api.nbaoracle.com` |
+| `API_KEY` | API key (from 1Password `nba-oracle-frontend/prod`) |
+
+### Custom Domain
+
+Frontend is connected to `nbaoracle.com`:
+1. DNS configured in Squarespace:
+   - A record: `@` → Vercel IP
+   - CNAME: `www` → `cname.vercel-dns.com`
+2. SSL automatic via Vercel
 
 ---
 
 ## Backend (EC2 + GitHub Actions)
 
-### Prerequisites
+### Infrastructure (Terraform)
 
-- AWS account
-- EC2 instance (t3.micro recommended)
-- GitHub repository with Actions enabled
-- SSH key for EC2 access
-
-### EC2 Instance Setup
-
-1. **Launch EC2 instance**
-   - AMI: Amazon Linux 2023 or Ubuntu 22.04
-   - Instance type: t3.micro (or t4g.micro for ARM)
-   - Security groups: Allow ports 22, 80, 443
-
-2. **Install Docker on EC2**
-   ```bash
-   # Amazon Linux 2023
-   sudo dnf update -y
-   sudo dnf install -y docker
-   sudo systemctl start docker
-   sudo systemctl enable docker
-   sudo usermod -aG docker ec2-user
-
-   # Install Docker Compose
-   sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-   sudo chmod +x /usr/local/bin/docker-compose
-   ```
-
-3. **Configure GitHub Container Registry access**
-   ```bash
-   # Create a GitHub Personal Access Token with read:packages scope
-   echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
-   ```
-
-### GitHub Actions CI/CD
-
-Create `.github/workflows/deploy.yml`:
-
-```yaml
-name: Deploy Backend
-
-on:
-  push:
-    branches: [main]
-    paths:
-      - 'backend/**'
-      - '.github/workflows/deploy.yml'
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/nba-oracle-backend
-
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./backend
-          target: prod
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-
-      - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd /home/ec2-user/nba-oracle
-            docker-compose -f docker-compose.prod.yml pull
-            docker-compose -f docker-compose.prod.yml up -d
-            docker image prune -f
-```
-
-### Required GitHub Secrets
-
-| Secret | Description |
-| ------ | ----------- |
-| `EC2_HOST` | EC2 public IP or hostname |
-| `EC2_USER` | SSH username (ec2-user or ubuntu) |
-| `EC2_SSH_KEY` | Private SSH key for EC2 access |
-
-### Production Environment File
-
-On EC2, create `/home/ec2-user/nba-oracle/.env.prod`:
+All infrastructure is managed via Terraform in `infrastructure/terraform/`:
 
 ```bash
-API_ENV=production
-DEBUG=false
-CORS_ORIGINS=https://your-frontend-domain.vercel.app
+# Deploy infrastructure
+cd infrastructure/terraform
+./terraform-apply.sh plan    # Preview changes
+./terraform-apply.sh apply   # Apply changes
+./terraform-apply.sh output  # Show Elastic IP, SSH command
 ```
 
-Or use 1Password CLI to generate:
-```bash
-task env ENV=prod
+**Resources created**:
+- EC2 t3.micro (Amazon Linux 2023)
+- Elastic IP (static, survives instance recreation)
+- Security groups (SSH, HTTP, HTTPS)
+- CloudWatch alarms (CPU, status checks)
+- SNS topic for alerts
+
+### EC2 Bootstrap
+
+The `scripts/user_data.sh` script runs on first boot:
+1. Installs Docker and Docker Compose
+2. Creates app directory structure
+3. Configures htpasswd for `/docs` protection
+4. Starts Docker service
+
+### CI/CD Pipeline
+
+GitHub Actions automates deployment (`.github/workflows/deploy-backend.yml`):
+
 ```
+Push to main → Build Image → Push to GHCR → SSH to EC2 → docker-compose up
+```
+
+**Flow**:
+1. `build-and-push.yml` builds Docker image, pushes to GHCR
+2. `deploy-backend.yml` SSHs to EC2, pulls image, restarts containers
+3. Health checks verify deployment
+4. Automatic rollback on failure
+
+### Required Secrets
+
+Only one GitHub secret needed:
+- `OP_SERVICE_ACCOUNT_TOKEN` - 1Password service account token
+
+All other secrets loaded dynamically from 1Password vault `NBA-Oracle`.
+
+### Docker Compose (Production)
+
+`docker-compose.prod.yml` runs on EC2:
+
+| Service | Image | Purpose |
+|---------|-------|---------|
+| nginx | `jonasal/nginx-certbot:5-alpine` | SSL termination, reverse proxy |
+| backend | `ghcr.io/*/nba-oracle-api` | FastAPI application |
+
+**Features**:
+- Automatic SSL certificate management (Let's Encrypt)
+- Health checks with auto-restart
+- Security hardening (no-new-privileges, cap_drop)
+- Log rotation
+
+---
+
+## DNS Configuration
+
+| Domain | Type | Target |
+|--------|------|--------|
+| `nbaoracle.com` | A | Vercel IP |
+| `www.nbaoracle.com` | CNAME | `cname.vercel-dns.com` |
+| `api.nbaoracle.com` | A | EC2 Elastic IP |
+
+---
+
+## Authentication
+
+### Backend API Key
+
+- Frontend sends actual API key in `X-API-Key` header (via Vercel serverless proxy)
+- Backend stores SHA-256 hash in `API_KEY_HASH` env var
+- Empty hash = skip verification (local dev mode)
+
+Generate a new key/hash pair:
+```python
+from app.core.security import generate_api_key_and_hash
+key, hash = generate_api_key_and_hash()
+# Store key in 1Password: nba-oracle-frontend/prod/API_KEY
+# Store hash in 1Password: nba-oracle-api/prod/API_KEY_HASH
+```
+
+### Docs Protection
+
+`/docs` and `/redoc` are protected with htpasswd basic auth. Credentials in 1Password `nba-oracle-htpasswd`.
 
 ---
 
@@ -187,7 +205,7 @@ Models are bundled directly in the Docker image for simplicity.
 
 ### Adding a New Model
 
-1. Train model locally or in Colab
+1. Train model locally or in Jupyter notebook
 2. Save as `.joblib`:
    ```python
    import joblib
@@ -198,22 +216,7 @@ Models are bundled directly in the Docker image for simplicity.
 ### Model Size Considerations
 
 - scikit-learn models are typically 1-50MB
-- For larger models (>100MB), consider:
-  - Git LFS
-  - S3 bucket with download on container start
-  - Separate model artifact pipeline
-
----
-
-## Terraform (Future)
-
-Infrastructure-as-code configuration will live in `infrastructure/terraform/`.
-
-Planned resources:
-- EC2 instance with security groups
-- Elastic IP (optional)
-- IAM roles for container registry access
-- CloudWatch monitoring
+- For larger models (>100MB), consider Git LFS or S3
 
 ---
 
@@ -221,82 +224,51 @@ Planned resources:
 
 ### Health Checks
 
-- Backend: `GET /health` returns `{"status": "healthy", "environment": "production"}`
-- Docker Compose includes automatic health checks
+- Backend: `GET /health` (public, no API key required)
+- Nginx: Container health check every 30s
+- GitHub Actions: Post-deployment health verification
+
+### CloudWatch
+
+- CPU utilization alarms (>80% for 5min)
+- Instance status check alarms
+- SNS email notifications
 
 ### Logs
 
 ```bash
-# On EC2
-docker-compose -f docker-compose.prod.yml logs -f backend
+# SSH to EC2 and view logs
+ssh -i ~/.ssh/nba-oracle.pem ec2-user@api.nbaoracle.com
 
-# Specific service
-docker logs nba-oracle-backend --follow
-```
+# Container logs
+docker logs nba-oracle-backend-prod --follow
+docker logs nba-oracle-nginx-prod --follow
 
-### Recommended Additions
-
-- CloudWatch Logs agent for centralized logging
-- Uptime monitoring (UptimeRobot, Pingdom free tiers)
-- Error tracking (Sentry free tier)
-
----
-
-## SSL/HTTPS
-
-### Let's Encrypt with Certbot
-
-```bash
-# Install certbot
-sudo dnf install -y certbot python3-certbot-nginx
-
-# Get certificate
-sudo certbot --nginx -d api.your-domain.com
-
-# Auto-renewal (already set up by certbot)
-sudo certbot renew --dry-run
-```
-
-### Nginx Configuration
-
-Place in `infrastructure/nginx/default.conf`:
-
-```nginx
-server {
-    listen 80;
-    server_name api.your-domain.com;
-    return 301 https://$server_name$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name api.your-domain.com;
-
-    ssl_certificate /etc/letsencrypt/live/api.your-domain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/api.your-domain.com/privkey.pem;
-
-    location / {
-        proxy_pass http://backend:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
+# Or from project directory
+docker compose -f docker-compose.prod.yml logs -f
 ```
 
 ---
 
 ## Rollback
 
-If a deployment fails:
+GitHub Actions auto-rollback on failed health checks. Manual rollback:
 
 ```bash
-# On EC2, roll back to previous image
-docker-compose -f docker-compose.prod.yml down
-docker pull ghcr.io/YOUR_USERNAME/nba-oracle-backend:PREVIOUS_SHA
-docker tag ghcr.io/YOUR_USERNAME/nba-oracle-backend:PREVIOUS_SHA ghcr.io/YOUR_USERNAME/nba-oracle-backend:latest
-docker-compose -f docker-compose.prod.yml up -d
+# On EC2
+cd ~/nba-oracle
+
+# List backups
+ls -la backup_*
+
+# Restore from backup
+BACKUP=backup_20250122_120000
+cp "$BACKUP/.env.prod" .env.prod
+cp "$BACKUP/docker-compose.prod.yml" docker-compose.prod.yml
+
+# Restart
+docker compose -f docker-compose.prod.yml down
+docker compose -f docker-compose.prod.yml up -d
 ```
 
 ---
@@ -305,18 +277,29 @@ docker-compose -f docker-compose.prod.yml up -d
 
 ### Container won't start
 ```bash
-docker logs nba-oracle-backend
-docker-compose -f docker-compose.prod.yml config  # Validate compose file
+docker logs nba-oracle-backend-prod
+docker compose -f docker-compose.prod.yml config
 ```
 
-### Can't pull from ghcr.io
+### SSL certificate issues
 ```bash
-# Re-authenticate
-echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+# Check certbot logs
+docker logs nba-oracle-nginx-prod | grep -i cert
+
+# Force certificate renewal
+docker exec nba-oracle-nginx-prod certbot renew --force-renewal
 ```
+
+### API returns 401 Unauthorized
+- Check `API_KEY` in Vercel env vars
+- Check `API_KEY_HASH` in backend `.env.prod`
+- Verify hash matches: `echo -n "your-key" | sha256sum`
 
 ### Health check failing
 ```bash
-curl -v http://localhost:8000/health
-docker exec nba-oracle-backend curl -v http://localhost:8000/health
+# Test from EC2
+docker exec nba-oracle-backend-prod python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health').read())"
+
+# Test public endpoint
+curl -v https://api.nbaoracle.com/health
 ```
