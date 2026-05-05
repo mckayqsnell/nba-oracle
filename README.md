@@ -57,3 +57,7 @@ task dev
 - **Public exposure** via Cloudflare Tunnel (zero open ports on the host; TLS terminated at Cloudflare's edge)
 
 See [docs/MIGRATION.md](docs/MIGRATION.md) for the deployment architecture and runbook.
+
+## License
+
+Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, modify, and distribute this software for any noncommercial purpose (personal study, research, hobby projects, education). Commercial use is not permitted.

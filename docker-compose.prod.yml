@@ -20,7 +20,7 @@ services:
         max-file: "3"
 
   backend:
-    image: ghcr.io/mckay-snell/nba-oracle-api:latest
+    image: ghcr.io/mckayqsnell/nba-oracle-api:latest
     container_name: nba-oracle-backend
     env_file:
       - .env.prod

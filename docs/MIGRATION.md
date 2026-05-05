@@ -43,7 +43,7 @@ You're already mid-way through your `mac-mini-server-guide.md`. Before you do an
    - If `private` → on the mini:
      ```bash
      ssh mini
-     echo $GITHUB_TOKEN | docker login ghcr.io -u mckay-snell --password-stdin
+     echo $GITHUB_TOKEN | docker login ghcr.io -u mckayqsnell --password-stdin
      ```
      Use a PAT with `read:packages` scope, store it in 1Password.
 
@@ -146,7 +146,7 @@ services:
         max-file: "3"
 
   backend:
-    image: ghcr.io/mckay-snell/nba-oracle-api:latest
+    image: ghcr.io/mckayqsnell/nba-oracle-api:latest
     container_name: nba-oracle-backend
     env_file:
       - .env.prod
@@ -256,7 +256,7 @@ This is the only step with downtime.
    ```bash
    ssh mini
    cd ~/projects/nba-oracle
-   git clone https://github.com/mckay-snell/nba-oracle.git .  # or pull latest
+   git clone https://github.com/mckayqsnell/nba-oracle.git .  # or pull latest
    ```
 
 2. **From your MacBook** (the secrets push):
