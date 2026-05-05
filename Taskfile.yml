@@ -28,8 +28,8 @@ includes:
   helpers:
     taskfile: ./tasks/helpers.yml
     dir: .
-  infra:
-    taskfile: ./tasks/infra.yml
+  secrets:
+    taskfile: ./tasks/secrets.yml
     dir: .
 
 tasks:

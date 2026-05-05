@@ -7,9 +7,9 @@ ML-powered NBA game predictions with live score tracking.
 ## Tech Stack
 
 - **Frontend**: React + TypeScript + Vite + Tailwind CSS (Vercel)
-- **Backend**: FastAPI + Python 3.13 (EC2)
+- **Backend**: FastAPI + Python 3.13 (Mac Mini M4 via Cloudflare Tunnel)
 - **ML**: scikit-learn + Jupyter notebooks
-- **Infrastructure**: Terraform + Docker + GitHub Actions
+- **Infrastructure**: Docker Compose + Watchtower + GitHub Actions
 - **Secrets**: 1Password
 
 ## Features
@@ -44,16 +44,16 @@ task dev
 
 ## Architecture
 
-```
-┌──────────────────┐     ┌──────────────────┐
-│  nbaoracle.com   │     │ api.nbaoracle.com│
-│     (Vercel)     │────▶│      (EC2)       │
-│  React + BFF     │     │  FastAPI + ML    │
-└──────────────────┘     └──────────────────┘
+```text
+┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│  nbaoracle.com   │     │ api.nbaoracle.com│     │  Mac Mini M4     │
+│     (Vercel)     │────▶│ Cloudflare Tunnel│────▶│  FastAPI + ML    │
+│  React + BFF     │     │   (TLS at edge)  │     │  (Docker)        │
+└──────────────────┘     └──────────────────┘     └──────────────────┘
 ```
 
 - **Frontend** deploys to Vercel with serverless functions as API proxy
-- **Backend** deploys to EC2 via GitHub Actions
-- **Infrastructure** managed with Terraform
+- **Backend** runs on a self-hosted Mac Mini; Watchtower auto-pulls new images from GHCR
+- **Public exposure** via Cloudflare Tunnel (zero open ports on the host; TLS terminated at Cloudflare's edge)
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full deployment guide.
+See [docs/MIGRATION.md](docs/MIGRATION.md) for the deployment architecture and runbook.

@@ -1,4 +1,6 @@
-# NBA Oracle - Deployment Guide
+# NBA Oracle - Archived EC2 Deployment Guide
+
+> **Archived 2026-05-04.** Describes the pre-Cloudflare-Tunnel architecture (EC2 + nginx-certbot + GHA SSH deploy). Kept for historical reference. The current deployment runs on a self-hosted Mac Mini behind a Cloudflare Tunnel — see [MIGRATION.md](./MIGRATION.md).
 
 ## Architecture Overview
 
