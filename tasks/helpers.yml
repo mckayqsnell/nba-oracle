@@ -74,12 +74,19 @@ tasks:
         docker compose up -d --build --remove-orphans
         echo ""
 
+        # Resolve host-bound ports from docker compose so the message stays in
+        # sync with whatever the compose mapping is (e.g. backend uses :8001 on
+        # the host to avoid conflicting with heal-api on :8000). Falls back to
+        # the current compose defaults if the lookup fails — usually means the
+        # container isn't up, in which case the URL is moot anyway.
+        BACKEND_PORT=$(docker compose port backend 8000 2>/dev/null | cut -d: -f2)
+        FRONTEND_PORT=$(docker compose port frontend 5173 2>/dev/null | cut -d: -f2)
         echo "Setup complete!"
         echo ""
         echo "Your app is running at:"
-        echo "  Frontend: http://localhost:5173"
-        echo "  Backend:  http://localhost:8000"
-        echo "  API Docs: http://localhost:8000/docs"
+        echo "  Frontend: http://localhost:${FRONTEND_PORT:-5173}"
+        echo "  Backend:  http://localhost:${BACKEND_PORT:-8001}"
+        echo "  API Docs: http://localhost:${BACKEND_PORT:-8001}/docs"
         echo ""
         echo "Useful commands:"
         echo "  task dev    - Start development"
@@ -134,12 +141,14 @@ tasks:
         fi
         echo ""
 
+        BACKEND_PORT=$(docker compose port backend 8000 2>/dev/null | cut -d: -f2)
+        FRONTEND_PORT=$(docker compose port frontend 5173 2>/dev/null | cut -d: -f2)
         echo "Development environment ready!"
         echo ""
         echo "Your app is running at:"
-        echo "  Frontend: http://localhost:5173"
-        echo "  Backend:  http://localhost:8000"
-        echo "  API Docs: http://localhost:8000/docs"
+        echo "  Frontend: http://localhost:${FRONTEND_PORT:-5173}"
+        echo "  Backend:  http://localhost:${BACKEND_PORT:-8001}"
+        echo "  API Docs: http://localhost:${BACKEND_PORT:-8001}/docs"
         echo ""
         echo "Useful commands:"
         echo "  task logs   - View logs"
@@ -214,6 +223,8 @@ tasks:
         docker compose up -d --build --remove-orphans
         echo ""
 
+        BACKEND_PORT=$(docker compose port backend 8000 2>/dev/null | cut -d: -f2)
+        FRONTEND_PORT=$(docker compose port frontend 5173 2>/dev/null | cut -d: -f2)
         echo "Environment fully updated!"
-        echo "  Frontend: http://localhost:5173"
-        echo "  Backend:  http://localhost:8000"
+        echo "  Frontend: http://localhost:${FRONTEND_PORT:-5173}"
+        echo "  Backend:  http://localhost:${BACKEND_PORT:-8001}"

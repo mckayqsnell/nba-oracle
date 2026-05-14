@@ -1,73 +1,42 @@
 """
-Structured logging configuration using structlog.
+Structured logging configuration.
 
-Best practices:
-- JSON output in production for log aggregation (ELK, Datadog, etc.)
-- Pretty console output in development for readability
-- Consistent context (request_id, user_id) across all log entries
-- Performance metrics (duration, cache hits) as structured fields
+Delegates to sentry-struct-logger (MIT-licensed,
+https://github.com/HEAL-Engineering/python-sentry-logger-wrapper) which handles
+structlog + Sentry in one shot:
+
+- JSON output to stdout (works with `docker logs` and log aggregators)
+- Sentry init when api_env in ("production", "test") AND sentry_dsn is set;
+  otherwise it's effectively a no-op, so this same call works in dev
+- ERROR-level logs become Sentry events, INFO+ logs become breadcrumbs and
+  structured Sentry logs
+- Adds trace_id/span_id to every log event for cross-service correlation
 """
 
 import logging
-import sys
-from typing import Any
 
 import structlog
-from structlog.types import Processor
+from python_sentry_logger_wrapper import get_logger as _configure_logger
 
-from app.config import settings
+from app.settings import settings
 
 
 def setup_logging() -> None:
-    """
-    Configure structlog for the application.
-
-    Development: Pretty, colored console output
-    Production: JSON output for log aggregation
-    """
-    # Shared processors for all environments
-    shared_processors: list[Processor] = [
-        structlog.contextvars.merge_contextvars,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.UnicodeDecoder(),
-    ]
-
-    if settings.debug:
-        # Development: colored console output
-        processors: list[Processor] = [
-            *shared_processors,
-            structlog.dev.ConsoleRenderer(colors=True, pad_event=30),
-        ]
-    else:
-        # Production: JSON for log aggregation
-        processors = [
-            *shared_processors,
-            structlog.processors.format_exc_info,
-            structlog.processors.JSONRenderer(),
-        ]
-
-    structlog.configure(
-        processors=processors,
-        wrapper_class=structlog.stdlib.BoundLogger,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=True,
+    """Configure structlog + Sentry. Idempotent (the package guards reinit)."""
+    _configure_logger(
+        service_name="nba-oracle",
+        log_level=logging.DEBUG if settings.debug else logging.INFO,
+        sentry_dsn=settings.sentry_dsn or None,
+        sentry_environment=settings.api_env,
+        sentry_breadcrumbs_level=logging.INFO,
+        sentry_event_level=logging.ERROR,
+        sentry_logs_level=settings.sentry_logs_level,
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+        # "auto" picks ConsoleRenderer under a TTY (running uvicorn directly in
+        # a terminal) and JSON otherwise (Docker, CI). No-op for Sentry — it
+        # captures at the stdlib handler before the renderer runs.
+        renderer="auto",
     )
-
-    # Configure standard library logging to use structlog
-    logging.basicConfig(
-        format="%(message)s",
-        stream=sys.stdout,
-        level=logging.DEBUG if settings.debug else logging.INFO,
-    )
-
-    # Suppress noisy third-party loggers
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
@@ -76,7 +45,7 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
 
 
 def log_api_call(
-    logger: Any,
+    logger: structlog.stdlib.BoundLogger,
     *,
     endpoint: str,
     method: str = "GET",
@@ -84,7 +53,7 @@ def log_api_call(
     status: str = "success",
     error: str | None = None,
     cached: bool = False,
-    **extra: Any,
+    **extra: object,
 ) -> None:
     """
     Log an external API call with consistent structure.
@@ -99,7 +68,7 @@ def log_api_call(
         cached: Whether result was served from cache
         **extra: Additional context fields
     """
-    log_data = {
+    log_data: dict[str, object] = {
         "api": "balldontlie",
         "endpoint": endpoint,
         "method": method,

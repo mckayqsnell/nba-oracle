@@ -16,7 +16,7 @@ This is the finetuned migration plan for **your** nba-oracle repo. Every step is
 | `/docs` auth | nginx htpasswd | Cloudflare Access (Zero Trust, free) |
 | DNS for `nbaoracle.com` | Squarespace | Cloudflare nameservers |
 | Deploy method | GHA → SSH → docker-compose | GHA push image → Watchtower auto-pulls |
-| Secrets to server | GHA loads from 1Password → SCP | `task secrets:push` from MacBook |
+| Secrets + compose to server | GHA loads from 1Password → SCP | `task prod:deploy` from MacBook |
 
 **What stays the same:** Vercel still hosts the frontend. The `[...path].ts` BFF proxy still injects `X-API-Key`. Only `BACKEND_URL` in Vercel will need to keep pointing at `https://api.nbaoracle.com` (which now resolves through Cloudflare Tunnel instead of the EC2 Elastic IP).
 
@@ -199,9 +199,9 @@ Keep:
 - `.github/workflows/cleanup-images.yml` — still useful
 - `infrastructure/terraform/` — keep until Phase 5, then optionally archive
 
-### 3.3 — Add `tasks/secrets.yml` to your Taskfile
+### 3.3 — Add `tasks/prod.yml` to your Taskfile
 
-Drop the `secrets.yml` file (delivered alongside this guide) into `tasks/` and add the include to your main `Taskfile.yml`:
+Drop the `prod.yml` file (delivered alongside this guide) into `tasks/` and add the include to your main `Taskfile.yml`:
 
 ```yaml
 # Taskfile.yml
@@ -212,15 +212,15 @@ includes:
   helpers:
     taskfile: ./tasks/helpers.yml
     dir: .
-  secrets:                         # ← add this
-    taskfile: ./tasks/secrets.yml  # ← add this
-    dir: .                         # ← add this
+  prod:                         # ← add this
+    taskfile: ./tasks/prod.yml  # ← add this
+    dir: .                      # ← add this
   # infra: keep or remove based on §3.2 decision
 ```
 
 Then test (without pushing yet):
 ```bash
-task secrets:push:dry-run
+task prod:deploy:dry-run
 ```
 
 ### 3.4 — Update `.github/workflows/build-and-push.yml`
@@ -259,12 +259,12 @@ This is the only step with downtime.
    git clone https://github.com/mckayqsnell/nba-oracle.git .  # or pull latest
    ```
 
-2. **From your MacBook** (the secrets push):
+2. **From your MacBook** (the config push):
    ```bash
    cd ~/projects/nba-oracle  # local clone with the new compose file
-   task secrets:push
+   task prod:deploy
    ```
-   This generates `.env.prod` from 1Password (now including `TUNNEL_TOKEN`), copies it to the mini, and starts the new compose stack.
+   This generates `.env.prod` from 1Password (now including `TUNNEL_TOKEN`), SCPs both `.env.prod` and `docker-compose.prod.yml` to the mini, and starts the new compose stack.
 
    First-time run: it'll fail the `_verify` step because Cloudflare DNS doesn't yet route to the new tunnel. That's fine — keep going.
 
@@ -378,7 +378,7 @@ ssh mini 'docker logs watchtower --tail=20'
 
 # Secrets rotation works
 # Edit a non-critical secret in 1Password, then:
-task secrets:push
+task prod:deploy
 # Verify the change took effect (e.g., a new BALLDONTLIE_API_KEY would still let the API work)
 ```
 
@@ -392,7 +392,7 @@ task secrets:push
    - Authentication: **SSH Key** → generate one in Shortcuts and add the public key to `~/.ssh/authorized_keys` on your MacBook
    - Script:
      ```bash
-     cd ~/projects/nba-oracle && /opt/homebrew/bin/task secrets:push
+     cd ~/projects/nba-oracle && /opt/homebrew/bin/task prod:deploy
      ```
 4. Tap-test from the phone. Add to your Home Screen for one-tap access.
 5. Pair with a monthly Reminder ("Rotate NBA Oracle secrets") set to repeat → Monthly. Done.

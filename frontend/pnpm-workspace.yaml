@@ -1,0 +1,37 @@
+# pnpm config — postinstall script allowlist
+#
+# pnpm v10+ refuses to run any dependency's preinstall/postinstall script by
+# default, exiting with ERR_PNPM_IGNORED_BUILDS. This is pnpm's "Security by
+# Default" change — without it, a single `pnpm install` historically meant
+# trusting the entire dep tree to execute arbitrary code, a huge supply-chain
+# attack surface.
+#
+# `allowBuilds` is the explicit allowlist. It's the *only* form that works in
+# pnpm v11+ — the older keys (`onlyBuiltDependencies`, `neverBuiltDependencies`,
+# `ignoredBuiltDependencies`, `onlyBuiltDependenciesFile`) were removed in v11
+# and merged into this one map. See https://pnpm.io/blog/releases/11.0.
+#
+# Don't put this config in `package.json` under a `pnpm` field — pnpm v10+
+# reads it only from this file (`pnpm-workspace.yaml`). The file works for
+# non-workspace projects too; it's now the canonical pnpm settings location.
+#
+# Currently allowed:
+#   - @swc/core  — Rust binary used by @vitejs/plugin-react-swc for JSX
+#                  transform + React Fast Refresh. Postinstall verifies the
+#                  per-arch native binary landed.
+#   - esbuild    — Go binary used internally by Vite for dep pre-bundling,
+#                  dev-mode transpile, and prod minification. Postinstall
+#                  chmods the binary and validates platform package.
+#
+# Workflow when a new dep blocks the install with ERR_PNPM_IGNORED_BUILDS:
+#   1. Read the package's postinstall script (`pnpm view <pkg>` or unpack the
+#      tarball) and confirm it's just unpacking a native binary, not phoning
+#      home or doing anything weird.
+#   2. Add `"<package>": true` here. Use the exact name pnpm reports in the
+#      error (e.g. "@swc/core" with the @scope intact and quoted).
+#   3. Do NOT use `--allow-build` wholesale or set `side-effects-cache true` —
+#      defeats the purpose of the security default.
+
+allowBuilds:
+  "@swc/core": true
+  esbuild: true

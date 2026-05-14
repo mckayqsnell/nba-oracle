@@ -39,7 +39,10 @@ services:
       - nba-oracle-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # curl isn't available — the backend image installs it only to bootstrap
+      # `uv`, then `apt-get purge -y curl` removes it. Use the bundled Python
+      # interpreter instead. urlopen raises on non-2xx, which exits non-zero.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
       interval: 30s
       timeout: 10s
       retries: 5

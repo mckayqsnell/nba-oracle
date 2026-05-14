@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 
-from app.config import settings
+from app.settings import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)

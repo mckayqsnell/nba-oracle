@@ -1,0 +1,252 @@
+version: '3'
+
+# Prod Deploy Tasks
+#
+# Ships prod configuration to the Mac Mini:
+#   - .env.prod              (secrets generated fresh from 1Password)
+#   - docker-compose.prod.yml (the compose spec the mini actually runs)
+#
+# Then force-recreates the affected containers so they pick up the new env
+# and any compose changes. The backend IMAGE is deployed separately via
+# Watchtower polling GHCR — this task only ships configuration.
+#
+# Flow:
+#   1. Safety: verify local main matches origin/main, on the right branch,
+#      and docker-compose.prod.yml has no uncommitted edits — you can't
+#      ship config you haven't pulled.
+#   2. Generate fresh .env.prod via op CLI (uses tasks/env.yml).
+#   3. SCP .env.prod + docker-compose.prod.yml to the mini.
+#   4. SSH to mini and force-recreate the affected containers.
+#   5. Verify health via the Cloudflare Tunnel.
+#
+# Requires:
+#   - 1Password CLI (`op`) signed in on this MacBook
+#   - SSH alias `mini` configured in ~/.ssh/config (Tailscale hostname)
+#   - The remote project dir to already exist (~/projects/nba-oracle/)
+#
+# Safety override (skip git checks): FORCE=1 task prod:deploy
+
+vars:
+  REMOTE_HOST: '{{.MINI_HOST | default "mini"}}'
+  REMOTE_PROJECT_DIR: '{{.MINI_PROJECT_DIR | default "~/projects/nba-oracle"}}'
+  COMPOSE_FILE: docker-compose.prod.yml
+  ENV_FILE: .env.prod
+  # Services that depend on .env.prod or compose changes and should be
+  # recreated on each deploy. Add more here if you add services that read
+  # these files.
+  RECREATE_SERVICES: backend cloudflared
+
+tasks:
+  # === Public Tasks ===
+
+  deploy:
+    desc: "Push secrets + compose to the Mac Mini and recreate containers"
+    silent: true
+    cmds:
+      - task: _preflight
+      - task: _generate
+      - task: _scp
+      - task: _restart
+      - task: _verify
+      - |
+        echo ""
+        echo "✅ Prod config deployed"
+        echo "   Pushed: {{.ENV_FILE}}, {{.COMPOSE_FILE}}"
+        echo "   Live at: https://api.nbaoracle.com/health"
+
+  deploy:dry-run:
+    desc: "Preview what `prod:deploy` would do without making changes"
+    silent: true
+    cmds:
+      - task: _preflight
+      - |
+        echo ""
+        echo "DRY RUN — would do the following:"
+        echo "  1. Run: task env:generate ENV=prod  (creates ./{{.ENV_FILE}} locally)"
+        echo "  2. Run: scp ./{{.ENV_FILE}} ./{{.COMPOSE_FILE}} {{.REMOTE_HOST}}:{{.REMOTE_PROJECT_DIR}}/"
+        echo "  3. Run: ssh {{.REMOTE_HOST}} 'cd {{.REMOTE_PROJECT_DIR}} && \\"
+        echo "         docker compose -f {{.COMPOSE_FILE}} up -d --force-recreate {{.RECREATE_SERVICES}}'"
+        echo "  4. Verify https://api.nbaoracle.com/health via the Cloudflare Tunnel"
+        echo ""
+        echo "Affected services: {{.RECREATE_SERVICES}}"
+        echo "Remote host:       {{.REMOTE_HOST}}"
+        echo "Remote project:    {{.REMOTE_PROJECT_DIR}}"
+
+  deploy:status:
+    desc: "Show the running container status on the Mac Mini"
+    silent: true
+    cmds:
+      - task: _preflight_ssh
+      - |
+        ssh {{.REMOTE_HOST}} 'cd {{.REMOTE_PROJECT_DIR}} && \
+          docker compose -f {{.COMPOSE_FILE}} ps'
+
+  # === Private Tasks ===
+
+  _preflight:
+    silent: true
+    internal: true
+    cmds:
+      - task: _preflight_ssh
+      - task: _preflight_git
+      - task: _preflight_op
+
+  _preflight_ssh:
+    silent: true
+    internal: true
+    cmds:
+      - |
+        # Verify SSH alias works before anything else
+        if ! ssh -o ConnectTimeout=5 -o BatchMode=yes {{.REMOTE_HOST}} 'echo ok' >/dev/null 2>&1; then
+          echo "❌ Cannot reach SSH host '{{.REMOTE_HOST}}'"
+          echo ""
+          echo "Check:"
+          echo "  - Tailscale running on this Mac and the mini"
+          echo "  - SSH alias 'mini' in ~/.ssh/config points to the mini's tailnet name"
+          echo "  - You can manually run:  ssh {{.REMOTE_HOST}}"
+          exit 1
+        fi
+      - |
+        # Verify remote project dir exists
+        if ! ssh {{.REMOTE_HOST}} "test -d {{.REMOTE_PROJECT_DIR}}" 2>/dev/null; then
+          echo "❌ Remote dir does not exist: {{.REMOTE_HOST}}:{{.REMOTE_PROJECT_DIR}}"
+          echo "   Create it on the mini, or set MINI_PROJECT_DIR=<path>"
+          exit 1
+        fi
+
+  _preflight_git:
+    silent: true
+    internal: true
+    cmds:
+      - |
+        # Ensure the working copy we're deploying from is in sync with
+        # origin/main and the compose file on disk matches what's committed.
+        # FORCE=1 to override.
+
+        if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          echo "❌ Not inside a git repo — refusing to deploy"
+          exit 1
+        fi
+
+        BRANCH=$(git rev-parse --abbrev-ref HEAD)
+        if [ "$BRANCH" != "main" ] && [ "${FORCE:-0}" != "1" ]; then
+          echo "❌ On branch '$BRANCH', expected 'main'"
+          echo "   Switch:   git switch main && git pull origin main"
+          echo "   Override: FORCE=1 task prod:deploy"
+          exit 1
+        fi
+
+        # Refresh remote refs so the comparison below is current
+        if ! git fetch --quiet origin main 2>/dev/null; then
+          if [ "${FORCE:-0}" != "1" ]; then
+            echo "❌ Could not fetch origin/main (offline?) — refusing to deploy"
+            echo "   Override: FORCE=1 task prod:deploy"
+            exit 1
+          fi
+          echo "⚠️  Skipping origin sync check (fetch failed, FORCE=1)"
+        else
+          BEHIND=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+          AHEAD=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+          if [ "$BEHIND" -gt 0 ] && [ "${FORCE:-0}" != "1" ]; then
+            echo "❌ Local main is $BEHIND commit(s) BEHIND origin/main"
+            echo "   You'd ship a stale {{.COMPOSE_FILE}}. Run: git pull origin main"
+            echo "   Override: FORCE=1 task prod:deploy"
+            exit 1
+          fi
+          if [ "$AHEAD" -gt 0 ] && [ "${FORCE:-0}" != "1" ]; then
+            echo "❌ Local main is $AHEAD commit(s) AHEAD of origin/main (unpushed)"
+            echo "   Push first so history reflects what shipped: git push origin main"
+            echo "   Override: FORCE=1 task prod:deploy"
+            exit 1
+          fi
+        fi
+
+        # The shipped compose file is the on-disk file. Block if it has
+        # uncommitted edits — otherwise prod won't match the repo.
+        if ! git diff --quiet HEAD -- {{.COMPOSE_FILE}} && [ "${FORCE:-0}" != "1" ]; then
+          echo "❌ {{.COMPOSE_FILE}} has uncommitted local changes"
+          echo "   The shipped file is the one on disk, NOT the committed version."
+          echo "   Commit/stash/revert it, or use FORCE=1 to ship as-is."
+          exit 1
+        fi
+
+        echo "   ✓ Git in sync: on main, up to date with origin, {{.COMPOSE_FILE}} clean"
+
+  _preflight_op:
+    silent: true
+    internal: true
+    cmds:
+      - |
+        # Verify op CLI is signed in
+        if ! op account list >/dev/null 2>&1; then
+          echo "❌ 1Password CLI not signed in. Run: eval \"\$(op signin)\""
+          exit 1
+        fi
+
+  _generate:
+    silent: true
+    internal: true
+    cmds:
+      - echo "📥 Generating {{.ENV_FILE}} from 1Password..."
+      # Cross-namespace `task:` directives don't resolve inside an included
+      # taskfile (v3), so invoke env:generate via the CLI from the root.
+      - task env:generate ENV=prod
+      - |
+        if [ ! -f {{.ENV_FILE}} ]; then
+          echo "❌ env:generate did not produce {{.ENV_FILE}}"
+          exit 1
+        fi
+        VAR_COUNT=$(grep -cE '^[A-Z_][A-Z0-9_]*=' {{.ENV_FILE}} || echo 0)
+        if [ "$VAR_COUNT" -lt 1 ]; then
+          echo "❌ {{.ENV_FILE}} has no variables — refusing to push"
+          exit 1
+        fi
+        echo "   ✓ {{.ENV_FILE}} has $VAR_COUNT variables"
+
+  _scp:
+    silent: true
+    internal: true
+    cmds:
+      - echo "📤 Pushing {{.ENV_FILE}} + {{.COMPOSE_FILE}} to {{.REMOTE_HOST}}..."
+      - |
+        if ! scp -q {{.ENV_FILE}} {{.COMPOSE_FILE}} {{.REMOTE_HOST}}:{{.REMOTE_PROJECT_DIR}}/; then
+          echo "❌ SCP failed"
+          exit 1
+        fi
+      - |
+        # Lock down permissions on the env file (chmod 600); compose can stay default
+        ssh {{.REMOTE_HOST}} "chmod 600 {{.REMOTE_PROJECT_DIR}}/{{.ENV_FILE}}"
+        echo "   ✓ Files copied; {{.ENV_FILE}} chmod 600"
+
+  _restart:
+    silent: true
+    internal: true
+    cmds:
+      - echo "🔄 Recreating containers ({{.RECREATE_SERVICES}})..."
+      - |
+        ssh {{.REMOTE_HOST}} "cd {{.REMOTE_PROJECT_DIR}} && \
+          docker compose -f {{.COMPOSE_FILE}} up -d --force-recreate {{.RECREATE_SERVICES}}" || {
+          echo "❌ Container recreation failed — config may not have applied"
+          exit 1
+        }
+      - echo "   ✓ Containers recreated"
+
+  _verify:
+    silent: true
+    internal: true
+    cmds:
+      - echo "🩺 Waiting for backend to become healthy..."
+      - |
+        # Try health endpoint a few times — give container time to come up
+        MAX=10
+        for i in $(seq 1 $MAX); do
+          if curl -sfm 5 https://api.nbaoracle.com/health >/dev/null 2>&1; then
+            echo "   ✓ /health responding (attempt $i)"
+            exit 0
+          fi
+          sleep 3
+        done
+        echo "⚠️  Backend not responding to /health after $MAX attempts"
+        echo "   The push completed, but verify manually:"
+        echo "   ssh {{.REMOTE_HOST}} 'cd {{.REMOTE_PROJECT_DIR}} && docker compose logs --tail=50 backend'"
+        exit 1

@@ -15,7 +15,7 @@ from typing import Annotated
 from balldontlie import BalldontlieAPI
 from fastapi import Depends
 
-from app.config import settings
+from app.settings import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)

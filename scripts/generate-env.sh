@@ -1,144 +1,109 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Generate .env files from 1Password.
+#
+# Convention:
+#   - Each env var = one 1Password item.
+#   - Item title       = ENV_VAR_NAME (e.g. DATABASE_URL)
+#   - Item password    = the value
+#   - Item tags        = `backend` and/or `frontend` (controls which file)
+#   - Vault per env    = NBA-Oracle-LOCAL, NBA-Oracle-PROD
+#
+# Usage: generate-env.sh <env> <target>
+#   env:    local | prod
+#   target: backend | frontend
+
+VAULT_PREFIX="NBA-Oracle"
+
+ENV="${1:?missing env (local|prod)}"
+TARGET="${2:?missing target (backend|frontend)}"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Environment variable validation pattern
-ENV_VAR_PATTERN='^[A-Z_][A-Z0-9_]*='
+case "$ENV" in
+    local) VAULT="${VAULT_PREFIX}-LOCAL" ;;
+    prod)  VAULT="${VAULT_PREFIX}-PROD" ;;
+    *)     echo -e "${RED}Unknown env '$ENV' (use local|prod)${NC}"; exit 1 ;;
+esac
 
-# Check if configuration file exists
-if [ ! -f ".1password.yml" ]; then
-    echo -e "${RED}Configuration file '.1password.yml' not found${NC}"
-    echo ""
-    echo "Run 'task setup' to create the configuration file."
+case "$TARGET" in
+    backend)  OUTPUT_FILE=".env.${ENV}" ;;
+    frontend) OUTPUT_FILE="frontend/.env.${ENV}" ;;
+    *)        echo -e "${RED}Unknown target '$TARGET' (use backend|frontend)${NC}"; exit 1 ;;
+esac
+
+# Pin to a specific 1Password account so commands work when multiple accounts
+# share the same email (e.g. personal + family + work).
+if [ -f .1password.yml ]; then
+    ACCOUNT=$(grep '^account:' .1password.yml | awk '{print $2}' | head -1 || echo "")
+    if [ -n "$ACCOUNT" ]; then
+        export OP_ACCOUNT="$ACCOUNT"
+    fi
+fi
+
+echo -e "${CYAN}Generating ${OUTPUT_FILE}${NC} from vault ${CYAN}${VAULT}${NC} (tag: ${CYAN}${TARGET}${NC})"
+
+if ! op vault get "$VAULT" >/dev/null 2>&1; then
+    echo -e "${RED}Vault '${VAULT}' not found (or not signed in)${NC}"
+    echo "  Run: op signin"
     exit 1
 fi
 
-# Load configuration from YAML (supports both 'item' and legacy 'repository' field)
-IFS=$'\t' read -r ACCOUNT VAULT ITEM < <(yq -r '[.account, .vault, (.item // .repository)] | @tsv' .1password.yml)
+# Check item count BEFORE writing a header — skip cleanly if nothing to do.
+# Frontend-local intentionally has no items today; don't fail the run for it.
+ITEMS=$(op item list --vault="$VAULT" --tags="$TARGET" --format json 2>/dev/null | jq -r '.[].title')
 
-# Validate required fields
-if [ -z "$VAULT" ] || [ "$VAULT" = "null" ]; then
-    echo -e "${RED}Missing 'vault' in .1password.yml${NC}"
-    exit 1
+if [ -z "$ITEMS" ]; then
+    echo -e "${YELLOW}  No items tagged '${TARGET}' in vault '${VAULT}' — skipping${NC}"
+    exit 0
 fi
 
-if [ -z "$ITEM" ] || [ "$ITEM" = "null" ]; then
-    echo -e "${RED}Missing 'item' in .1password.yml${NC}"
-    exit 1
-fi
-
-ENV="${1:-local}"
-
-# Set up account flag
-ACCOUNT_FLAG=""
-if [ -n "$ACCOUNT" ] && [ "$ACCOUNT" != "null" ]; then
-    ACCOUNT_FLAG="--account=$ACCOUNT"
-fi
-
-ITEM_NAME="$ITEM"
-OUTPUT_FILE=".env.${ENV}"
-
-echo -e "${BLUE}Generating environment file from 1Password${NC}"
-if [ -n "$ACCOUNT" ] && [ "$ACCOUNT" != "null" ]; then
-    echo -e "   Account: ${CYAN}${ACCOUNT}${NC}"
-fi
-echo -e "   Vault:   ${CYAN}${VAULT}${NC}"
-echo -e "   Item:    ${CYAN}${ITEM_NAME}${NC}"
-echo -e "   Section: ${CYAN}${ENV}${NC}"
-echo -e "   File:    ${CYAN}${OUTPUT_FILE}${NC}"
-echo ""
-
-# Check if item exists
-if ! op item get "$ITEM_NAME" --vault="$VAULT" $ACCOUNT_FLAG >/dev/null 2>&1; then
-    echo -e "${RED}Item '${ITEM_NAME}' not found in vault '${VAULT}'${NC}"
-    echo ""
-    echo "Create it manually in 1Password with:"
-    echo "  Title: ${ITEM_NAME}"
-    echo "  Vault: ${VAULT}"
-    echo "  Type:  Secure Note"
-    echo "  Add sections for each environment (${ENV}, etc.)"
-    exit 1
-fi
-
-# Create the .env file with header
+mkdir -p "$(dirname "$OUTPUT_FILE")"
 cat > "$OUTPUT_FILE" << EOF
 # ================================================
-# Environment: ${ENV}
+# Environment: ${ENV} (${TARGET})
+# Source: 1Password/${VAULT} (tag: ${TARGET})
 # Generated: $(date)
-# Source: 1Password/${VAULT}/${ITEM_NAME}/${ENV}
 # ================================================
-# DO NOT COMMIT THIS FILE TO GIT
-# Regenerate with: task env ENV=${ENV}
+# DO NOT COMMIT THIS FILE
+# Regenerate: task env ENV=${ENV} TARGET=${TARGET}
 # ================================================
 
 EOF
 
-# Fetch the item from 1Password
-TEMP_FILE=$(mktemp)
-op item get "$ITEM_NAME" --vault="$VAULT" $ACCOUNT_FLAG --format json > "$TEMP_FILE"
+# Read every item tagged with $TARGET in $VAULT, in parallel.
+# Supports both 1Password categories we use:
+#   - "API Credential"  → value in field `credential`
+#   - "Password"        → value in field `password`
+# Try credential first (newer UI default), fall back to password.
+echo "$ITEMS" | \
+    xargs -P 10 -I {} sh -c '
+        ITEM="$1"
+        VAULT_NAME="'"$VAULT"'"
+        VALUE=$(op read "op://${VAULT_NAME}/${ITEM}/credential" 2>/dev/null \
+             || op read "op://${VAULT_NAME}/${ITEM}/password"   2>/dev/null \
+             || true)
+        if [ -z "$VALUE" ]; then
+            echo "  ! Failed to read ${ITEM} (no credential/password field)" >&2
+            exit 0
+        fi
+        printf "%s=%s\n" "${ITEM}" "${VALUE}"
+    ' _ {} | grep -E '^[A-Z_][A-Z0-9_]*=' >> "$OUTPUT_FILE" || true
 
-# Find the section ID for the requested environment
-SECTION_IDS=($(jq -r --arg env "$ENV" '
-    .sections[]? |
-    select(.label == $env) |
-    .id' "$TEMP_FILE"))
+VAR_COUNT=$(grep -cE '^[A-Z_][A-Z0-9_]*=' "$OUTPUT_FILE" 2>/dev/null || true)
+VAR_COUNT="${VAR_COUNT:-0}"
 
-if [ "${#SECTION_IDS[@]}" -eq 0 ]; then
-    SECTION_ID=""
-elif [ "${#SECTION_IDS[@]}" -eq 1 ]; then
-    SECTION_ID="${SECTION_IDS[0]}"
-else
-    echo -e "${RED}Multiple sections found with label '${ENV}'${NC}"
-    rm -f "$TEMP_FILE"
+if [ "$VAR_COUNT" -eq 0 ]; then
+    echo -e "${YELLOW}No valid env vars written to ${OUTPUT_FILE}${NC}"
+    echo "  Items must have a credential/password field and an UPPER_SNAKE_CASE title."
+    rm -f "$OUTPUT_FILE"
     exit 1
 fi
 
-if [ -z "$SECTION_ID" ]; then
-    echo -e "${YELLOW}Section '${ENV}' not found in 1Password item${NC}"
-    echo ""
-    echo "Available sections:"
-    jq -r '.sections[]? | "  - \(.label)"' "$TEMP_FILE" 2>/dev/null || echo "  (none)"
-    echo ""
-    echo "To add the '${ENV}' section:"
-    echo "  1. Open the item in 1Password"
-    echo "  2. Add a new section named '${ENV}'"
-    echo "  3. Add your environment variables"
-    rm -f "$TEMP_FILE"
-    exit 1
-fi
-
-# Extract fields from the specified section
-jq -r --arg section_id "$SECTION_ID" '
-    .fields[]? |
-    select(.section != null) |
-    select(.section.id == $section_id) |
-    select(.value != null and .value != "") |
-    select(.type == "STRING" or .type == "CONCEALED" or .type == "EMAIL" or .type == "URL") |
-    "\(.label)=\(.value)"' "$TEMP_FILE" | \
-    grep -E "$ENV_VAR_PATTERN" >> "$OUTPUT_FILE" || true
-
-# Count variables
-VAR_COUNT=$(grep -c "$ENV_VAR_PATTERN" "$OUTPUT_FILE" || echo "0")
-
-rm -f "$TEMP_FILE"
-
-if [ "$VAR_COUNT" -eq "0" ]; then
-    echo -e "${YELLOW}No environment variables found in section '${ENV}'${NC}"
-    echo ""
-    echo "Add fields to the '${ENV}' section in 1Password"
-else
-    echo -e "${GREEN}Generated ${OUTPUT_FILE} with ${VAR_COUNT} variables${NC}"
-    echo ""
-    echo "Variables:"
-    grep "^[A-Za-z_][A-Za-z0-9_]*=" "$OUTPUT_FILE" | \
-        sed 's/=.*//' | \
-        sed 's/^/  - /' | \
-        sort
-fi
+echo -e "${GREEN}Wrote ${VAR_COUNT} variables to ${OUTPUT_FILE}${NC}"

@@ -6,20 +6,6 @@ version: '3'
 # Load environment variables from .env.local for development
 dotenv: ['.env.local']
 
-vars:
-  # Load configuration from .1password.yml if it exists
-  ACCOUNT:
-    sh: '[ -f .1password.yml ] && yq .account .1password.yml | grep -v "^null$" || echo ""'
-  VAULT:
-    sh: '[ -f .1password.yml ] && yq .vault .1password.yml || echo "Private"'
-  # 1Password item name (supports both 'item' and legacy 'repository' field)
-  ITEM_NAME:
-    sh: '[ -f .1password.yml ] && (yq ".item // .repository" .1password.yml | grep -v "^null$") || echo "nba-oracle-api"'
-  ENVIRONMENTS:
-    sh: '[ -f .1password.yml ] && yq -r ".environments | join(\" \")" .1password.yml || echo "local prod"'
-  # Account flag for op commands
-  ACCOUNT_FLAG: '{{if .ACCOUNT}}--account={{.ACCOUNT}}{{end}}'
-
 # Include modular Taskfiles
 includes:
   env:
@@ -28,8 +14,8 @@ includes:
   helpers:
     taskfile: ./tasks/helpers.yml
     dir: .
-  secrets:
-    taskfile: ./tasks/secrets.yml
+  prod:
+    taskfile: ./tasks/prod.yml
     dir: .
 
 tasks:
@@ -73,11 +59,12 @@ tasks:
   # === Environment Shorthand ===
 
   env:
-    desc: "Generate .env files from 1Password"
+    desc: "Generate .env files from 1Password (use ENV=local|prod TARGET=backend|frontend to scope)"
     cmds:
       - task: env:generate
         vars:
           ENV: '{{.ENV | default ""}}'
+          TARGET: '{{.TARGET | default ""}}'
 
   # === Logging ===
 
